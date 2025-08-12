@@ -85,6 +85,7 @@ var _ = Describe("Drift", func() {
 	It("should detect stale instance type drift if the instance type label doesn't exist", func() {
 		delete(nodeClaim.Labels, corev1.LabelInstanceTypeStable)
 		ExpectApplied(ctx, env.Client, nodePool, nodeClaim)
+		fakeClock.Step(time.Hour * 2) // To move 2h past the creationTimestamp
 		ExpectObjectReconciled(ctx, env.Client, nodeClaimDisruptionController, nodeClaim)
 
 		nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
@@ -93,6 +94,7 @@ var _ = Describe("Drift", func() {
 	It("should detect stale instance type drift if the instance type doesn't exist", func() {
 		cp.InstanceTypes = nil
 		ExpectApplied(ctx, env.Client, nodePool, nodeClaim)
+		fakeClock.Step(time.Hour * 2) // To move 2h past the creationTimestamp
 		ExpectObjectReconciled(ctx, env.Client, nodeClaimDisruptionController, nodeClaim)
 
 		nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
@@ -104,6 +106,7 @@ var _ = Describe("Drift", func() {
 			return it
 		})
 		ExpectApplied(ctx, env.Client, nodePool, nodeClaim)
+		fakeClock.Step(time.Hour * 2) // To move 2h past the creationTimestamp
 		ExpectObjectReconciled(ctx, env.Client, nodeClaimDisruptionController, nodeClaim)
 
 		nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
@@ -112,12 +115,16 @@ var _ = Describe("Drift", func() {
 	It("should detect stale instance type drift if the instance type offerings aren't compatible with the nodeclaim", func() {
 		cp.InstanceTypes = lo.Map(cp.InstanceTypes, func(it *cloudprovider.InstanceType, _ int) *cloudprovider.InstanceType {
 			if it.Name == nodeClaim.Labels[corev1.LabelInstanceTypeStable] {
-				newLabels := lo.Keys(nodeClaim.Labels)
-				it.Requirements = scheduling.NewLabelRequirements(map[string]string{newLabels[0]: test.RandomName()})
+				for i := range it.Offerings {
+					it.Offerings[i].Requirements = scheduling.NewLabelRequirements(map[string]string{
+						corev1.LabelTopologyZone: test.RandomName(),
+					})
+				}
 			}
 			return it
 		})
 		ExpectApplied(ctx, env.Client, nodePool, nodeClaim)
+		fakeClock.Step(time.Hour * 2) // To move 2h past the creationTimestamp
 		ExpectObjectReconciled(ctx, env.Client, nodeClaimDisruptionController, nodeClaim)
 
 		nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
@@ -190,7 +197,6 @@ var _ = Describe("Drift", func() {
 		Expect(nodeClaim.StatusConditions().Get(v1.ConditionTypeDrifted)).To(BeNil())
 	})
 	It("should remove the status condition from the nodeClaim if the nodeClaim is no longer drifted", func() {
-		cp.Drifted = ""
 		nodeClaim.StatusConditions().SetTrue(v1.ConditionTypeDrifted)
 		ExpectApplied(ctx, env.Client, nodePool, nodeClaim)
 
@@ -202,8 +208,6 @@ var _ = Describe("Drift", func() {
 	Context("NodeRequirement Drift", func() {
 		DescribeTable("",
 			func(oldNodePoolReq []v1.NodeSelectorRequirementWithMinValues, newNodePoolReq []v1.NodeSelectorRequirementWithMinValues, labels map[string]string, drifted bool) {
-				cp.Drifted = ""
-
 				nodePool.Spec.Template.Spec.Requirements = oldNodePoolReq
 				nodeClaim.Labels = lo.Assign(nodeClaim.Labels, labels)
 
@@ -353,7 +357,6 @@ var _ = Describe("Drift", func() {
 			),
 		)
 		It("should return drifted only on NodeClaims that are drifted from an updated nodePool", func() {
-			cp.Drifted = ""
 			nodePool.Spec.Template.Spec.Requirements = []v1.NodeSelectorRequirementWithMinValues{
 				{NodeSelectorRequirement: corev1.NodeSelectorRequirement{Key: v1.CapacityTypeLabelKey, Operator: corev1.NodeSelectorOpIn, Values: []string{v1.CapacityTypeOnDemand}}},
 				{NodeSelectorRequirement: corev1.NodeSelectorRequirement{Key: corev1.LabelOSStable, Operator: corev1.NodeSelectorOpIn, Values: []string{string(corev1.Linux), string(corev1.Windows)}}},
@@ -408,7 +411,6 @@ var _ = Describe("Drift", func() {
 	Context("NodePool Static Drift", func() {
 		var nodePoolController *hash.Controller
 		BeforeEach(func() {
-			cp.Drifted = ""
 			nodePoolController = hash.NewController(env.Client, cp)
 			nodePool = &v1.NodePool{
 				ObjectMeta: nodePool.ObjectMeta,
