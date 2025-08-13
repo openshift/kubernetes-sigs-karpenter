@@ -158,7 +158,10 @@ var _ = Describe("Emptiness", func() {
 			Expect(metric.GetGauge().GetValue()).To(BeNumerically("==", 10))
 
 			// Execute command, thus deleting 10 nodes
-			ExpectSingletonReconciled(ctx, queue)
+			cmds := queue.GetCommands()
+			Expect(cmds).To(HaveLen(1))
+			ExpectObjectReconciled(ctx, env.Client, queue, cmds[0].Candidates[0].NodeClaim)
+
 			Expect(len(ExpectNodeClaims(ctx, env.Client))).To(Equal(0))
 		})
 		It("should allow no empty nodes to be disrupted", func() {
@@ -199,8 +202,10 @@ var _ = Describe("Emptiness", func() {
 			Expect(found).To(BeTrue())
 			Expect(metric.GetGauge().GetValue()).To(BeNumerically("==", 0))
 
-			// Execute command, thus deleting no nodes
-			ExpectSingletonReconciled(ctx, queue)
+			// There should be no commands in the queue
+			cmds := queue.GetCommands()
+			Expect(cmds).To(HaveLen(0))
+
 			Expect(len(ExpectNodeClaims(ctx, env.Client))).To(Equal(numNodes))
 		})
 		It("should only allow 3 empty nodes to be disrupted", func() {
@@ -246,7 +251,10 @@ var _ = Describe("Emptiness", func() {
 			Expect(metric.GetGauge().GetValue()).To(BeNumerically("==", 3))
 
 			// Execute command, thus deleting 3 nodes
-			ExpectSingletonReconciled(ctx, queue)
+			cmds := queue.GetCommands()
+			Expect(cmds).To(HaveLen(1))
+			ExpectObjectReconciled(ctx, env.Client, queue, cmds[0].Candidates[0].NodeClaim)
+
 			Expect(len(ExpectNodeClaims(ctx, env.Client))).To(Equal(7))
 		})
 		It("should allow 2 nodes from each nodePool to be deleted", func() {
@@ -316,7 +324,10 @@ var _ = Describe("Emptiness", func() {
 			}
 
 			// Execute the command in the queue, only deleting 20 nodes
-			ExpectSingletonReconciled(ctx, queue)
+			cmds := queue.GetCommands()
+			Expect(cmds).To(HaveLen(1))
+			ExpectObjectReconciled(ctx, env.Client, queue, cmds[0].Candidates[0].NodeClaim)
+
 			Expect(len(ExpectNodeClaims(ctx, env.Client))).To(Equal(10))
 		})
 		It("should allow all nodes from each nodePool to be deleted", func() {
@@ -385,7 +396,10 @@ var _ = Describe("Emptiness", func() {
 			}
 
 			// Execute the command in the queue, deleting all nodes
-			ExpectSingletonReconciled(ctx, queue)
+			cmds := queue.GetCommands()
+			Expect(cmds).To(HaveLen(1))
+			ExpectObjectReconciled(ctx, env.Client, queue, cmds[0].Candidates[0].NodeClaim)
+
 			Expect(len(ExpectNodeClaims(ctx, env.Client))).To(Equal(0))
 		})
 	})
@@ -402,7 +416,8 @@ var _ = Describe("Emptiness", func() {
 			ExpectSingletonReconciled(ctx, disruptionController)
 			wg.Wait()
 
-			ExpectSingletonReconciled(ctx, queue)
+			ExpectObjectReconciled(ctx, env.Client, queue, nodeClaim)
+
 			// Cascade any deletion of the nodeClaim to the node
 			ExpectNodeClaimsCascadeDeletion(ctx, env.Client, nodeClaim)
 
@@ -410,6 +425,32 @@ var _ = Describe("Emptiness", func() {
 			Expect(ExpectNodeClaims(ctx, env.Client)).To(HaveLen(0))
 			Expect(ExpectNodes(ctx, env.Client)).To(HaveLen(0))
 			ExpectNotFound(ctx, env.Client, nodeClaim, node)
+		})
+		It("can delete empty and drifted nodes", func() {
+			nodeClaim.StatusConditions().SetTrue(v1.ConditionTypeDrifted)
+			ExpectApplied(ctx, env.Client, nodePool, nodeClaim, node)
+
+			// inform cluster state about nodes and nodeclaims
+			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, nodeStateController, nodeClaimStateController, []*corev1.Node{node}, []*v1.NodeClaim{nodeClaim})
+
+			fakeClock.Step(10 * time.Minute)
+			wg := sync.WaitGroup{}
+			ExpectToWait(fakeClock, &wg)
+			ExpectSingletonReconciled(ctx, disruptionController)
+			wg.Wait()
+
+			ExpectObjectReconciled(ctx, env.Client, queue, nodeClaim)
+
+			// Cascade any deletion of the nodeClaim to the node
+			ExpectNodeClaimsCascadeDeletion(ctx, env.Client, nodeClaim)
+
+			// we should delete the empty node
+			Expect(ExpectNodeClaims(ctx, env.Client)).To(HaveLen(0))
+			Expect(ExpectNodes(ctx, env.Client)).To(HaveLen(0))
+			ExpectNotFound(ctx, env.Client, nodeClaim, node)
+			ExpectMetricGaugeValue(disruption.EligibleNodes, 1, map[string]string{
+				metrics.ReasonLabel: "empty",
+			})
 		})
 		It("should ignore nodes without the consolidatable status condition", func() {
 			_ = nodeClaim.StatusConditions().Clear(v1.ConditionTypeConsolidatable)
@@ -438,6 +479,29 @@ var _ = Describe("Emptiness", func() {
 			Expect(ExpectNodeClaims(ctx, env.Client)).To(HaveLen(1))
 			Expect(ExpectNodes(ctx, env.Client)).To(HaveLen(1))
 			ExpectExists(ctx, env.Client, nodeClaim)
+		})
+		It("should delete nodes with the karpenter.sh/do-not-disrupt annotation set to false", func() {
+			node.Annotations = lo.Assign(node.Annotations, map[string]string{v1.DoNotDisruptAnnotationKey: "false"})
+			ExpectApplied(ctx, env.Client, nodePool, nodeClaim, node)
+
+			// inform cluster state about nodes and nodeclaims
+			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, nodeStateController, nodeClaimStateController, []*corev1.Node{node}, []*v1.NodeClaim{nodeClaim})
+
+			fakeClock.Step(10 * time.Minute)
+			wg := sync.WaitGroup{}
+			ExpectToWait(fakeClock, &wg)
+			ExpectSingletonReconciled(ctx, disruptionController)
+			wg.Wait()
+
+			ExpectObjectReconciled(ctx, env.Client, queue, nodeClaim)
+
+			// Cascade any deletion of the nodeClaim to the node
+			ExpectNodeClaimsCascadeDeletion(ctx, env.Client, nodeClaim)
+
+			// we should delete the empty node
+			Expect(ExpectNodeClaims(ctx, env.Client)).To(HaveLen(0))
+			Expect(ExpectNodes(ctx, env.Client)).To(HaveLen(0))
+			ExpectNotFound(ctx, env.Client, nodeClaim, node)
 		})
 		It("should ignore nodes that have pods", func() {
 			pod := test.Pod()
@@ -483,7 +547,9 @@ var _ = Describe("Emptiness", func() {
 		ExpectSingletonReconciled(ctx, disruptionController)
 		wg.Wait()
 
-		ExpectSingletonReconciled(ctx, queue)
+		cmds := queue.GetCommands()
+		Expect(cmds).To(HaveLen(1))
+		ExpectObjectReconciled(ctx, env.Client, queue, cmds[0].Candidates[0].NodeClaim)
 
 		// Cascade any deletion of the nodeclaim to the node
 		ExpectNodeClaimsCascadeDeletion(ctx, env.Client, nodeClaim, nodeClaim2)
@@ -598,7 +664,7 @@ var _ = Describe("Emptiness", func() {
 		ExpectSingletonReconciled(ctx, disruptionController)
 		wg.Wait()
 
-		ExpectSingletonReconciled(ctx, queue)
+		ExpectObjectReconciled(ctx, env.Client, queue, nodeClaim)
 
 		// Cascade any deletion of the nodeclaim to the node
 		ExpectNodeClaimsCascadeDeletion(ctx, env.Client, nodeClaim)
@@ -663,7 +729,7 @@ var _ = Describe("Emptiness", func() {
 		ExpectSingletonReconciled(ctx, disruptionController)
 		wg.Wait()
 
-		ExpectSingletonReconciled(ctx, queue)
+		ExpectObjectReconciled(ctx, env.Client, queue, nodeClaim)
 
 		// Cascade any deletion of the nodeclaim to the node
 		ExpectNodeClaimsCascadeDeletion(ctx, env.Client, nodeClaim)
@@ -719,7 +785,8 @@ var _ = Describe("Emptiness", func() {
 		fakeClock.Step(10 * time.Minute)
 
 		ExpectSingletonReconciled(ctx, disruptionController)
-		ExpectSingletonReconciled(ctx, queue)
+		cmds := queue.GetCommands()
+		Expect(cmds).To(HaveLen(0))
 
 		// Cascade any deletion of the nodeclaim to the node
 		ExpectNodeClaimsCascadeDeletion(ctx, env.Client, nodeClaim)
@@ -760,7 +827,7 @@ var _ = Describe("Emptiness", func() {
 		wg.Wait()
 
 		// Process the item so that the nodes can be deleted.
-		ExpectSingletonReconciled(ctx, queue)
+		ExpectObjectReconciled(ctx, env.Client, queue, nodeClaim)
 
 		// Cascade any deletion of the nodeclaim to the node
 		ExpectNodeClaimsCascadeDeletion(ctx, env.Client, nodeClaims[0])
