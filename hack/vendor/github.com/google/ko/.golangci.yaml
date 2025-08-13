@@ -1,0 +1,47 @@
+version: "2"
+linters:
+  enable:
+    - asciicheck
+    - errorlint
+    - gosec
+    - importas
+    - misspell
+    - prealloc
+    - revive
+    - staticcheck
+    - tparallel
+    - unconvert
+    - unparam
+    - whitespace
+  disable:
+    - depguard
+    - errcheck
+  settings:
+    gosec:
+      excludes:
+        - G115
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - gosec
+        path: test
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
