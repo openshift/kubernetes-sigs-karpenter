@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/awslabs/operatorpkg/serrors"
 	"github.com/awslabs/operatorpkg/status"
 	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
@@ -39,6 +40,11 @@ import (
 	"sigs.k8s.io/karpenter/pkg/test/v1alpha1"
 	"sigs.k8s.io/karpenter/pkg/utils/resources"
 )
+
+func init() {
+	v1.WellKnownLabels = v1.WellKnownLabels.Insert(v1alpha1.LabelReservationID)
+	cloudprovider.ReservationIDLabel = v1alpha1.LabelReservationID
+}
 
 var _ cloudprovider.CloudProvider = (*CloudProvider)(nil)
 
@@ -87,7 +93,7 @@ func (c *CloudProvider) Reset() {
 	c.NextGetErr = nil
 	c.DeleteCalls = []*v1.NodeClaim{}
 	c.GetCalls = nil
-	c.Drifted = "drifted"
+	c.Drifted = ""
 	c.NodeClassGroupVersionKind = []schema.GroupVersionKind{
 		{
 			Group:   "",
@@ -104,6 +110,7 @@ func (c *CloudProvider) Reset() {
 	}
 }
 
+//nolint:gocyclo
 func (c *CloudProvider) Create(ctx context.Context, nodeClaim *v1.NodeClaim) (*v1.NodeClaim, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -121,9 +128,16 @@ func (c *CloudProvider) Create(ctx context.Context, nodeClaim *v1.NodeClaim) (*v
 	reqs := scheduling.NewNodeSelectorRequirementsWithMinValues(nodeClaim.Spec.Requirements...)
 	np := &v1.NodePool{ObjectMeta: metav1.ObjectMeta{Name: nodeClaim.Labels[v1.NodePoolLabelKey]}}
 	instanceTypes := lo.Filter(lo.Must(c.GetInstanceTypes(ctx, np)), func(i *cloudprovider.InstanceType, _ int) bool {
-		return reqs.IsCompatible(i.Requirements, scheduling.AllowUndefinedWellKnownLabels) &&
-			i.Offerings.Available().HasCompatible(reqs) &&
-			resources.Fits(nodeClaim.Spec.Resources.Requests, i.Allocatable())
+		if !reqs.IsCompatible(i.Requirements, scheduling.AllowUndefinedWellKnownLabels) {
+			return false
+		}
+		if !i.Offerings.Available().HasCompatible(reqs) {
+			return false
+		}
+		if !resources.Fits(nodeClaim.Spec.Resources.Requests, i.Allocatable()) {
+			return false
+		}
+		return true
 	})
 	// Order instance types so that we get the cheapest instance types of the available offerings
 	sort.Slice(instanceTypes, func(i, j int) bool {
@@ -139,14 +153,28 @@ func (c *CloudProvider) Create(ctx context.Context, nodeClaim *v1.NodeClaim) (*v
 			labels[key] = requirement.Values()[0]
 		}
 	}
-	// Find Offering
-	for _, o := range instanceType.Offerings.Available() {
-		if reqs.IsCompatible(o.Requirements, scheduling.AllowUndefinedWellKnownLabels) {
-			labels[corev1.LabelTopologyZone] = o.Requirements.Get(corev1.LabelTopologyZone).Any()
-			labels[v1.CapacityTypeLabelKey] = o.Requirements.Get(v1.CapacityTypeLabelKey).Any()
+	// Find offering, prioritizing reserved instances
+	var offering *cloudprovider.Offering
+	offerings := instanceType.Offerings.Available().Compatible(reqs)
+	lo.Must0(len(offerings) != 0, "created nodeclaim with no available offerings")
+	for _, o := range offerings {
+		if o.CapacityType() == v1.CapacityTypeReserved {
+			o.ReservationCapacity -= 1
+			if o.ReservationCapacity == 0 {
+				o.Available = false
+			}
+			offering = o
 			break
 		}
 	}
+	if offering == nil {
+		offering = offerings[0]
+	}
+	// Propagate labels dictated by offering requirements - e.g. zone, capacity-type, and reservation-id
+	for _, req := range offering.Requirements {
+		labels[req.Key] = req.Any()
+	}
+
 	created := &v1.NodeClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        nodeClaim.Name,
@@ -177,7 +205,7 @@ func (c *CloudProvider) Get(_ context.Context, id string) (*v1.NodeClaim, error)
 	if nodeClaim, ok := c.CreatedNodeClaims[id]; ok {
 		return nodeClaim.DeepCopy(), nil
 	}
-	return nil, cloudprovider.NewNodeClaimNotFoundError(fmt.Errorf("no nodeclaim exists with id '%s'", id))
+	return nil, cloudprovider.NewNodeClaimNotFoundError(serrors.Wrap(fmt.Errorf("no nodeclaim exists with id"), "id", id))
 }
 
 func (c *CloudProvider) List(_ context.Context) ([]*v1.NodeClaim, error) {
@@ -257,7 +285,7 @@ func (c *CloudProvider) Delete(_ context.Context, nc *v1.NodeClaim) error {
 		delete(c.CreatedNodeClaims, nc.Status.ProviderID)
 		return nil
 	}
-	return cloudprovider.NewNodeClaimNotFoundError(fmt.Errorf("no nodeclaim exists with provider id '%s'", nc.Status.ProviderID))
+	return cloudprovider.NewNodeClaimNotFoundError(serrors.Wrap(fmt.Errorf("no nodeclaim exists with provider id"), "provider-id", nc.Status.ProviderID))
 }
 
 func (c *CloudProvider) IsDrifted(context.Context, *v1.NodeClaim) (cloudprovider.DriftReason, error) {
