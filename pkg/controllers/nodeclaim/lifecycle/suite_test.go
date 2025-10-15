@@ -30,6 +30,10 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clock "k8s.io/utils/clock/testing"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	"sigs.k8s.io/karpenter/pkg/operator/logging"
+	"sigs.k8s.io/karpenter/pkg/state/nodepoolhealth"
 
 	"sigs.k8s.io/karpenter/pkg/apis"
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
@@ -42,12 +46,19 @@ import (
 	. "sigs.k8s.io/karpenter/pkg/utils/testing"
 )
 
-var ctx context.Context
-var nodeClaimController *nodeclaimlifecycle.Controller
-var env *test.Environment
-var fakeClock *clock.FakeClock
-var cloudProvider *fake.CloudProvider
-var recorder *test.EventRecorder
+func init() {
+	log.SetLogger(logging.NopLogger)
+}
+
+var (
+	ctx                 context.Context
+	nodeClaimController *nodeclaimlifecycle.Controller
+	env                 *test.Environment
+	fakeClock           *clock.FakeClock
+	cloudProvider       *fake.CloudProvider
+	recorder            *test.EventRecorder
+	npState             nodepoolhealth.State
+)
 
 func TestAPIs(t *testing.T) {
 	ctx = TestContextWithLogger(t)
@@ -74,7 +85,8 @@ var _ = BeforeSuite(func() {
 	ctx = options.ToContext(ctx, test.Options())
 
 	cloudProvider = fake.NewCloudProvider()
-	nodeClaimController = nodeclaimlifecycle.NewController(fakeClock, env.Client, cloudProvider, recorder)
+	npState = nodepoolhealth.State{}
+	nodeClaimController = nodeclaimlifecycle.NewController(fakeClock, env.Client, cloudProvider, recorder, npState)
 })
 
 var _ = AfterSuite(func() {
@@ -135,6 +147,39 @@ var _ = Describe("Finalizer", func() {
 				return f == v1.TerminationFinalizer
 			})
 			Expect(ok).To(BeFalse())
+		})
+		It("should update status conditions to the latest generation when finalizing", func() {
+			nodeClaim := test.NodeClaim(v1.NodeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						v1.NodePoolLabelKey: nodePool.Name,
+					},
+				},
+			})
+			ExpectApplied(ctx, env.Client, nodePool, nodeClaim)
+			ExpectMakeNodeClaimsInitialized(ctx, env.Client, nodeClaim)
+			ExpectObjectReconciled(ctx, env.Client, nodeClaimController, nodeClaim)
+			nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+			// add a finalizer so we can make assertions about all status conditions
+			ExpectDeletionTimestampSet(ctx, env.Client, nodeClaim)
+			ExpectObjectReconciled(ctx, env.Client, nodeClaimController, nodeClaim)
+			nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+
+			Expect(nodeClaim.StatusConditions().Get(v1.ConditionTypeLaunched).IsTrue()).To(BeTrue())
+			Expect(nodeClaim.StatusConditions().Get(v1.ConditionTypeLaunched).ObservedGeneration).To(Equal(nodeClaim.Generation))
+			Expect(nodeClaim.StatusConditions().Get(v1.ConditionTypeRegistered).IsTrue()).To(BeTrue())
+			Expect(nodeClaim.StatusConditions().Get(v1.ConditionTypeRegistered).ObservedGeneration).To(Equal(nodeClaim.Generation))
+			Expect(nodeClaim.StatusConditions().Get(v1.ConditionTypeInitialized).IsTrue()).To(BeTrue())
+			Expect(nodeClaim.StatusConditions().Get(v1.ConditionTypeInitialized).ObservedGeneration).To(Equal(nodeClaim.Generation))
+			Expect(nodeClaim.StatusConditions().Get(status.ConditionReady).IsTrue()).To(BeTrue())
+			Expect(nodeClaim.StatusConditions().Get(status.ConditionReady).ObservedGeneration).To(Equal(nodeClaim.Generation))
+
+			ExpectObjectReconciled(ctx, env.Client, nodeClaimController, nodeClaim)
+			nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+			Expect(nodeClaim.StatusConditions().Get(v1.ConditionTypeInstanceTerminating).IsTrue()).To(BeTrue())
+			Expect(nodeClaim.StatusConditions().Get(v1.ConditionTypeInstanceTerminating).ObservedGeneration).To(Equal(nodeClaim.Generation))
+			ExpectFinalizersRemoved(ctx, env.Client, nodeClaim)
+			ExpectDeleted(ctx, env.Client, nodeClaim)
 		})
 	})
 	It("should update observedGeneration if generation increases after all conditions are marked True", func() {
