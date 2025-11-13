@@ -16,7 +16,7 @@ main() {
 tools() {
     go mod tidy -C "${SCRIPT_DIR}"
     # go install github.com/google/go-licenses //disabled
-    go install github.com/golangci/golangci-lint/cmd/golangci-lint
+    go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint
     go install github.com/mikefarah/yq/v4
     go install github.com/google/ko
     # go install github.com/norwoodj/helm-docs/cmd/helm-docs //disabled

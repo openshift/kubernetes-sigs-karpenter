@@ -6,6 +6,8 @@ coverage.html
 *.heapprofile
 go.work
 go.work.sum
+report.json
+*__debug_*
 
 # Common in OSs and IDEs
 .idea

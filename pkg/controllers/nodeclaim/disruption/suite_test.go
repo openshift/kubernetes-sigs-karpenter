@@ -23,6 +23,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -77,22 +78,22 @@ var _ = BeforeEach(func() {
 		Architecture:     "arch",
 		Resources:        resources,
 		OperatingSystems: sets.New(string(corev1.Linux)),
-		Offerings: []cloudprovider.Offering{
+		Offerings: []*cloudprovider.Offering{
 			{
+				Available: true,
 				Requirements: scheduling.NewLabelRequirements(map[string]string{
 					v1.CapacityTypeLabelKey:  v1.CapacityTypeSpot,
 					corev1.LabelTopologyZone: "test-zone-1a",
 				}),
-				Price:     fake.PriceFromResources(resources),
-				Available: true,
+				Price: fake.PriceFromResources(resources),
 			},
 			{
+				Available: true,
 				Requirements: scheduling.NewLabelRequirements(map[string]string{
 					v1.CapacityTypeLabelKey:  v1.CapacityTypeOnDemand,
 					corev1.LabelTopologyZone: "test-zone-1a",
 				}),
-				Price:     fake.PriceFromResources(resources),
-				Available: true,
+				Price: fake.PriceFromResources(resources),
 			},
 		},
 	})
@@ -103,6 +104,7 @@ var _ = BeforeEach(func() {
 
 var _ = AfterEach(func() {
 	cp.Reset()
+	nodeClaimDisruptionController.Reset()
 	ExpectCleanedUp(ctx, env.Client)
 })
 
@@ -141,8 +143,37 @@ var _ = Describe("Disruption", func() {
 		Expect(nodeClaim.StatusConditions().Get(v1.ConditionTypeDrifted).IsTrue()).To(BeTrue())
 		Expect(nodeClaim.StatusConditions().Get(v1.ConditionTypeConsolidatable).IsTrue()).To(BeTrue())
 	})
+	It("should not set consolidatable condition for Static Nodepool", func() {
+		nodePool = test.StaticNodePool()
+		nodePool.Spec.Replicas = lo.ToPtr(int64(1))
+		nodeClaim, node = test.NodeClaimAndNode(v1.NodeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: map[string]string{
+					v1.NodePoolLabelKey:            nodePool.Name,
+					corev1.LabelInstanceTypeStable: it.Name,
+				},
+			},
+		})
+		// set the lastPodEvent to 5 minutes in the past
+		nodeClaim.Status.LastPodEventTime.Time = fakeClock.Now().Add(-5 * time.Minute)
+		ExpectApplied(ctx, env.Client, nodeClaim)
+		ExpectMakeNodeClaimsInitialized(ctx, env.Client, nodeClaim)
+
+		cp.Drifted = "drifted"
+		nodePool.Spec.Disruption.ConsolidationPolicy = v1.ConsolidationPolicyWhenEmpty
+		nodePool.Spec.Disruption.ConsolidateAfter = v1.MustParseNillableDuration("30s")
+		ExpectApplied(ctx, env.Client, nodePool, nodeClaim, node)
+		ExpectMakeNodeClaimsInitialized(ctx, env.Client, nodeClaim)
+
+		// step forward to make the node empty
+		fakeClock.Step(60 * time.Second)
+		ExpectObjectReconciled(ctx, env.Client, nodeClaimDisruptionController, nodeClaim)
+
+		nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+		Expect(nodeClaim.StatusConditions().Get(v1.ConditionTypeDrifted).IsTrue()).To(BeTrue())
+		Expect(nodeClaim.StatusConditions().Get(v1.ConditionTypeConsolidatable).IsTrue()).To(BeFalse())
+	})
 	It("should remove multiple disruption conditions simultaneously", func() {
-		cp.Drifted = ""
 		nodePool.Spec.Disruption.ConsolidateAfter = v1.MustParseNillableDuration("Never")
 
 		nodeClaim.StatusConditions().SetTrue(v1.ConditionTypeDrifted)

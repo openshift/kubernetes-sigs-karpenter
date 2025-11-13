@@ -6,7 +6,9 @@ HELM_OPTS ?= --set logLevel=debug \
 			--set controller.resources.requests.cpu=1 \
 			--set controller.resources.requests.memory=1Gi \
 			--set controller.resources.limits.cpu=1 \
-			--set controller.resources.limits.memory=1Gi
+			--set controller.resources.limits.memory=1Gi \
+			--set settings.featureGates.nodeRepair=true \
+			--set settings.featureGates.staticCapacity=true
 
 help: ## Display help
 	@awk 'BEGIN {FS = ":.*##"; printf "Usage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z_0-9-]+:.*?##/ { printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
@@ -14,15 +16,15 @@ help: ## Display help
 presubmit: verify test licenses vulncheck ## Run all steps required for code to be checked in
 
 install-kwok: ## Install kwok provider
-	UNINSTALL_KWOK=false ./hack/install-kwok.sh
+	./hack/install-kwok.sh
 
 uninstall-kwok: ## Uninstall kwok provider
-	UNINSTALL_KWOK=true ./hack/install-kwok.sh
+	UNINSTALL=true ./hack/install-kwok.sh
 
 build-with-kind: # build with kind assumes the image will be uploaded directly onto the kind control plane, without an image repository
 	$(eval CONTROLLER_IMG=$(shell $(WITH_GOFLAGS) KO_DOCKER_REPO="$(KWOK_REPO)" ko build sigs.k8s.io/karpenter/kwok))
 	$(eval IMG_REPOSITORY=$(shell echo $(CONTROLLER_IMG) | cut -d ":" -f 1))
-	$(eval IMG_TAG=latest) 
+	$(eval IMG_TAG=latest)
 
 # UPSTREAM: <carry>: add --insecure-registry to "ko build" and replace public repo pullspec with internal repo
 INTERNAL_REPO="image-registry.openshift-image-registry.svc:5000"
@@ -46,7 +48,7 @@ apply-with-kind: verify build-with-kind ## Deploy the kwok controller from the c
 		--set controller.image.tag=$(IMG_TAG) \
 		--set serviceMonitor.enabled=true \
 		--set-string controller.env[0].name=ENABLE_PROFILING \
-		--set-string controller.env[0].value=true 
+		--set-string controller.env[0].value=true
 
 # UPSTREAM: <carry>: duplicates apply-with-kind, but has openshift-specific dependency steps
 .PHONY: apply-with-openshift
@@ -60,16 +62,16 @@ apply-with-openshift: openshift-verify build-with-openshift ## Deploy the kwok c
 		--set-string controller.env[0].name=ENABLE_PROFILING \
 		--set-string controller.env[0].value=true
 
-JUNIT_REPORT := $(if $(ARTIFACT_DIR), --ginkgo.junit-report="$(ARTIFACT_DIR)/junit_report.xml")
 e2etests: ## Run the e2e suite against your local cluster
 	cd test && go test \
 		-count 1 \
-		-timeout 30m \
+		-timeout 2h \
 		-v \
 		./suites/$(shell echo $(TEST_SUITE) | tr A-Z a-z)/... \
 		$(JUNIT_REPORT) \
 		--ginkgo.focus="${FOCUS}" \
-		--ginkgo.timeout=30m \
+		--ginkgo.skip="${SKIP}" \
+		--ginkgo.timeout=2h \
 		--ginkgo.grace-period=5m \
 		--ginkgo.vv
 
@@ -82,6 +84,7 @@ apply: verify build ## Deploy the kwok controller from the current state of your
 		--set controller.image.repository=$(IMG_REPOSITORY) \
 		--set controller.image.tag=$(IMG_TAG) \
 		--set controller.image.digest=$(IMG_DIGEST) \
+		--set settings.preferencePolicy=Ignore \
 		--set-string controller.env[0].name=ENABLE_PROFILING \
 		--set-string controller.env[0].value=true
 
