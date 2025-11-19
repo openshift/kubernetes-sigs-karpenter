@@ -62,6 +62,9 @@ apply-with-openshift: openshift-verify build-with-openshift ## Deploy the kwok c
 		--set-string controller.env[0].name=ENABLE_PROFILING \
 		--set-string controller.env[0].value=true
 
+# TODO(jkyros): This got squashed out accidentally once before, this needs to stay in unless
+# we decide to explicitly take it out, so watch for it :) 
+JUNIT_REPORT := $(if $(ARTIFACT_DIR), --ginkgo.junit-report="$(ARTIFACT_DIR)/junit_report.xml")
 e2etests: ## Run the e2e suite against your local cluster
 	cd test && go test \
 		-count 1 \
