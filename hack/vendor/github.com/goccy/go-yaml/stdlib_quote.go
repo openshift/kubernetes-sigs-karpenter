@@ -1,3 +1,19 @@
+/*
+Copyright The Kubernetes Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 // Copied and trimmed down from https://github.com/golang/go/blob/e3769299cd3484e018e0e2a6e1b95c2b18ce4f41/src/strconv/quote.go
 // We want to use the standard library's private "quoteWith" function rather than write our own so that we get robust unicode support.
 // Every private function called by quoteWith was copied.
