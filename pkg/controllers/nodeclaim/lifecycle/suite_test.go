@@ -30,10 +30,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clock "k8s.io/utils/clock/testing"
-	"sigs.k8s.io/controller-runtime/pkg/log"
-
-	"sigs.k8s.io/karpenter/pkg/operator/logging"
-	"sigs.k8s.io/karpenter/pkg/state/nodepoolhealth"
 
 	"sigs.k8s.io/karpenter/pkg/apis"
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
@@ -46,19 +42,12 @@ import (
 	. "sigs.k8s.io/karpenter/pkg/utils/testing"
 )
 
-func init() {
-	log.SetLogger(logging.NopLogger)
-}
-
-var (
-	ctx                 context.Context
-	nodeClaimController *nodeclaimlifecycle.Controller
-	env                 *test.Environment
-	fakeClock           *clock.FakeClock
-	cloudProvider       *fake.CloudProvider
-	recorder            *test.EventRecorder
-	npState             nodepoolhealth.State
-)
+var ctx context.Context
+var nodeClaimController *nodeclaimlifecycle.Controller
+var env *test.Environment
+var fakeClock *clock.FakeClock
+var cloudProvider *fake.CloudProvider
+var recorder *test.EventRecorder
 
 func TestAPIs(t *testing.T) {
 	ctx = TestContextWithLogger(t)
@@ -85,8 +74,7 @@ var _ = BeforeSuite(func() {
 	ctx = options.ToContext(ctx, test.Options())
 
 	cloudProvider = fake.NewCloudProvider()
-	npState = nodepoolhealth.State{}
-	nodeClaimController = nodeclaimlifecycle.NewController(fakeClock, env.Client, cloudProvider, recorder, npState)
+	nodeClaimController = nodeclaimlifecycle.NewController(fakeClock, env.Client, cloudProvider, recorder)
 })
 
 var _ = AfterSuite(func() {

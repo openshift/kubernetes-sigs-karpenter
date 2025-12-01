@@ -6,9 +6,7 @@ HELM_OPTS ?= --set logLevel=debug \
 			--set controller.resources.requests.cpu=1 \
 			--set controller.resources.requests.memory=1Gi \
 			--set controller.resources.limits.cpu=1 \
-			--set controller.resources.limits.memory=1Gi \
-			--set settings.featureGates.nodeRepair=true \
-			--set settings.featureGates.staticCapacity=true
+			--set controller.resources.limits.memory=1Gi
 
 help: ## Display help
 	@awk 'BEGIN {FS = ":.*##"; printf "Usage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z_0-9-]+:.*?##/ { printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
@@ -16,30 +14,22 @@ help: ## Display help
 presubmit: verify test licenses vulncheck ## Run all steps required for code to be checked in
 
 install-kwok: ## Install kwok provider
-	./hack/install-kwok.sh
+	UNINSTALL_KWOK=false ./hack/install-kwok.sh
 
 uninstall-kwok: ## Uninstall kwok provider
-	UNINSTALL=true ./hack/install-kwok.sh
+	UNINSTALL_KWOK=true ./hack/install-kwok.sh
 
 build-with-kind: # build with kind assumes the image will be uploaded directly onto the kind control plane, without an image repository
 	$(eval CONTROLLER_IMG=$(shell $(WITH_GOFLAGS) KO_DOCKER_REPO="$(KWOK_REPO)" ko build sigs.k8s.io/karpenter/kwok))
 	$(eval IMG_REPOSITORY=$(shell echo $(CONTROLLER_IMG) | cut -d ":" -f 1))
 	$(eval IMG_TAG=latest)
 
-# UPSTREAM: <carry>: add --insecure-registry to "ko build" and replace public repo pullspec with internal repo
-INTERNAL_REPO="image-registry.openshift-image-registry.svc:5000"
-.PHONY: build-with-openshift
-build-with-openshift: ## Build the Karpenter KWOK controller images using ko build for OpenShift cluster 
-	$(eval CONTROLLER_IMG=$(shell $(WITH_GOFLAGS) KO_DOCKER_REPO="$(KWOK_REPO)" ko build --insecure-registry sigs.k8s.io/karpenter/kwok))
-	$(eval IMG_REPOSITORY=$(shell echo $(INTERNAL_REPO)/$(shell echo $(CONTROLLER_IMG) | cut -d "/" -f 2-3 | cut -d "@" -f 1)))
-	$(eval IMG_TAG=latest)
-	
 build: ## Build the Karpenter KWOK controller images using ko build
 	$(eval CONTROLLER_IMG=$(shell $(WITH_GOFLAGS) KO_DOCKER_REPO="$(KWOK_REPO)" ko build -B sigs.k8s.io/karpenter/kwok))
 	$(eval IMG_REPOSITORY=$(shell echo $(CONTROLLER_IMG) | cut -d "@" -f 1 | cut -d ":" -f 1))
 	$(eval IMG_TAG=$(shell echo $(CONTROLLER_IMG) | cut -d "@" -f 1 | cut -d ":" -f 2 -s))
 	$(eval IMG_DIGEST=$(shell echo $(CONTROLLER_IMG) | cut -d "@" -f 2))
- 
+
 apply-with-kind: verify build-with-kind ## Deploy the kwok controller from the current state of your git repository into your ~/.kube/config cluster
 	kubectl apply -f kwok/charts/crds
 	helm upgrade --install karpenter kwok/charts --namespace $(KARPENTER_NAMESPACE) --skip-crds \
@@ -50,31 +40,14 @@ apply-with-kind: verify build-with-kind ## Deploy the kwok controller from the c
 		--set-string controller.env[0].name=ENABLE_PROFILING \
 		--set-string controller.env[0].value=true
 
-# UPSTREAM: <carry>: duplicates apply-with-kind, but has openshift-specific dependency steps
-.PHONY: apply-with-openshift
-apply-with-openshift: openshift-verify build-with-openshift ## Deploy the kwok controller from the current state of your git repository into your ~/.kube/config OpenShift cluster
-	kubectl apply -f kwok/charts/crds
-	helm upgrade --install karpenter kwok/charts --namespace $(KARPENTER_NAMESPACE) --skip-crds \
-		$(HELM_OPTS) \
-		--set controller.image.repository=$(IMG_REPOSITORY) \
-		--set controller.image.tag=$(IMG_TAG) \
-		--set serviceMonitor.enabled=true \
-		--set-string controller.env[0].name=ENABLE_PROFILING \
-		--set-string controller.env[0].value=true
-
-# TODO(jkyros): This got squashed out accidentally once before, this needs to stay in unless
-# we decide to explicitly take it out, so watch for it :) 
-JUNIT_REPORT := $(if $(ARTIFACT_DIR), --ginkgo.junit-report="$(ARTIFACT_DIR)/junit_report.xml")
 e2etests: ## Run the e2e suite against your local cluster
 	cd test && go test \
 		-count 1 \
-		-timeout 2h \
+		-timeout 30m \
 		-v \
 		./suites/$(shell echo $(TEST_SUITE) | tr A-Z a-z)/... \
-		$(JUNIT_REPORT) \
 		--ginkgo.focus="${FOCUS}" \
-		--ginkgo.skip="${SKIP}" \
-		--ginkgo.timeout=2h \
+		--ginkgo.timeout=30m \
 		--ginkgo.grace-period=5m \
 		--ginkgo.vv
 
@@ -143,37 +116,11 @@ verify: ## Verify code. Includes codegen, docgen, dependencies, linting, formatt
 		fi;}
 	actionlint -oneline
 
-# UPSTREAM: <carry>: duplicates verify, but removes unnecessary steps for downstream
-.PHONY: openshift-verify
-openshift-verify: ## Verify code on OpenShift Prow CI. A stripped down copy of the "verify" target.
-	go mod tidy && go mod vendor && go mod verify
-	go generate ./...
-	hack/validation/taint.sh
-	hack/validation/requirements.sh
-	hack/validation/labels.sh
-	hack/validation/status.sh
-	cp -r pkg/apis/crds kwok/charts
-	hack/kwok/requirements.sh
-	@perl -i -pe 's/sets.Set/sets.Set[string]/g' pkg/scheduling/zz_generated.deepcopy.go
-	hack/boilerplate.sh
-	go vet ./...
-	golangci-lint run
-	@git diff --quiet ||\
-		{ echo "New file modification detected in the Git working tree. Please check in before commit."; git --no-pager diff --name-only | uniq | awk '{print "  - " $$0}'; \
-		if [ "${CI}" = true ]; then\
-			exit 1;\
-		fi;}
-
 download: ## Recursively "go mod download" on all directories where go.mod exists
 	$(foreach dir,$(MOD_DIRS),cd $(dir) && go mod download $(newline))
 
 toolchain: ## Install developer toolchain
 	./hack/toolchain.sh
-
-# UPSTREAM: <carry>: installs toolchain for OpenShift CI.
-.PHONY: openshift-toolchain
-openshift-toolchain: ## Install developer toolchain for OpenShift CI.
-	./hack/openshift-toolchain.sh
 
 gen_instance_types:
 	go run kwok/tools/gen_instance_types.go > kwok/cloudprovider/instance_types.json

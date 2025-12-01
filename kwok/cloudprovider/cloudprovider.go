@@ -19,13 +19,11 @@ package kwok
 import (
 	"context"
 	_ "embed"
-	stderrors "errors"
 	"fmt"
 	"math/rand"
 	"strings"
 	"time"
 
-	"github.com/awslabs/operatorpkg/serrors"
 	"github.com/awslabs/operatorpkg/status"
 	"github.com/docker/docker/pkg/namesgenerator"
 	"github.com/samber/lo"
@@ -67,9 +65,6 @@ func (c CloudProvider) Create(ctx context.Context, nodeClaim *v1.NodeClaim) (*v1
 			return nil, cloudprovider.NewInsufficientCapacityError(fmt.Errorf("resolving node class from nodeclaim, %w", err))
 		}
 		return nil, fmt.Errorf("resolving node class from nodeclaim, %w", err)
-	}
-	if status := nodeClass.StatusConditions().Get(status.ConditionReady); status.IsFalse() {
-		return nil, cloudprovider.NewNodeClassNotReadyError(stderrors.New(status.Message))
 	}
 	// Kick-off a goroutine to allow us to asynchronously register nodes
 	// We're fine to leak this because failed registration can also happen in real providers
@@ -157,19 +152,7 @@ func (c CloudProvider) GetSupportedNodeClasses() []status.Object {
 }
 
 func (c CloudProvider) RepairPolicies() []cloudprovider.RepairPolicy {
-	return []cloudprovider.RepairPolicy{
-		// Supported Kubelet Node Conditions
-		{
-			ConditionType:      corev1.NodeReady,
-			ConditionStatus:    corev1.ConditionFalse,
-			TolerationDuration: 10 * time.Minute,
-		},
-		{
-			ConditionType:      corev1.NodeReady,
-			ConditionStatus:    corev1.ConditionUnknown,
-			TolerationDuration: 10 * time.Minute,
-		},
-	}
+	return []cloudprovider.RepairPolicy{}
 }
 
 func (c CloudProvider) getInstanceType(instanceTypeName string) (*cloudprovider.InstanceType, error) {
@@ -177,7 +160,7 @@ func (c CloudProvider) getInstanceType(instanceTypeName string) (*cloudprovider.
 		return it.Name == instanceTypeName
 	})
 	if !found {
-		return nil, serrors.Wrap(fmt.Errorf("unable to find instance type"), "instance-type", instanceTypeName)
+		return nil, fmt.Errorf("unable to find instance type %q", instanceTypeName)
 	}
 	return it, nil
 }
@@ -201,7 +184,7 @@ func (c CloudProvider) toNode(nodeClaim *v1.NodeClaim) (*corev1.Node, error) {
 	for _, val := range req.Values {
 		it, err := c.getInstanceType(val)
 		if err != nil {
-			return nil, serrors.Wrap(fmt.Errorf("instance type not found"), "instance-type", val)
+			return nil, fmt.Errorf("instance type %s not found", val)
 		}
 
 		availableOfferings := it.Offerings.Available().Compatible(requirements)
@@ -225,11 +208,8 @@ func (c CloudProvider) toNode(nodeClaim *v1.NodeClaim) (*corev1.Node, error) {
 			Taints:     []corev1.Taint{v1.UnregisteredNoExecuteTaint},
 		},
 		Status: corev1.NodeStatus{
-			// KWOK nodes don't support overriding Karpenter's WellKnownResources,
-			// so we only apply resource requests, since NodeOverlay will not apply.
-			// If this changes in the future, we'll need to update capacity and allocatable values for KWOK nodes.
-			Capacity:    nodeClaim.Spec.Resources.Requests,
-			Allocatable: lo.Assign(nodeClaim.Spec.Resources.Requests, instanceType.Allocatable()),
+			Capacity:    instanceType.Capacity,
+			Allocatable: instanceType.Allocatable(),
 			Phase:       corev1.NodePending,
 		},
 	}, nil
