@@ -20,12 +20,9 @@ Karpenter is a multi-cloud project with implementations by the following cloud p
 - [AWS](https://github.com/aws/karpenter-provider-aws)
 - [Azure](https://github.com/Azure/karpenter-provider-azure)
 - [AlibabaCloud](https://github.com/cloudpilot-ai/karpenter-provider-alibabacloud)
-- [Bizfly Cloud](https://github.com/bizflycloud/karpenter-provider-bizflycloud)
 - [Cluster API](https://github.com/kubernetes-sigs/karpenter-provider-cluster-api)
 - [GCP](https://github.com/cloudpilot-ai/karpenter-provider-gcp)
-- [IBM Cloud](https://github.com/pfeifferj/karpenter-provider-ibm-cloud)
 - [Proxmox](https://github.com/sergelogvinov/karpenter-provider-proxmox)
-- [Oracle Cloud Infrastructure (OCI)](https://github.com/zoom/karpenter-oci)
 
 ## Community, discussion, contribution, and support
 
@@ -40,10 +37,10 @@ Bi-weekly meetings alternating between Thursdays @ 9:00 PT ([convert to your tim
 Weekly meetings alternating between repositories and time slots. Please check the calendar invite for specific dates:
 
 **kubernetes-sigs/karpenter**:
-- Alternating Mondays @ 9:00 PT ([convert to your timezone](http://www.thetimezoneconverter.com/?t=9:00&tz=Seattle)) and @ 15:00 PT [convert to your timezone](http://www.thetimezoneconverter.com/?t=15:00&tz=Seattle) monthly
+- Alternating Mondays @ 9:00 PT ([convert to your timezone](http://www.thetimezoneconverter.com/?t=9:00&tz=Seattle)) and @ 15:00 PT [convert to your timezone](http://www.thetimezoneconverter.com/?t=15:00&tz=Seattle) bi-weekly
 
 **aws/karpenter-provider-aws**:
-- Alternating Mondays @ 9:00 PT ([convert to your timezone](http://www.thetimezoneconverter.com/?t=9:00&tz=Seattle)) and @ 15:00 PT [convert to your timezone](http://www.thetimezoneconverter.com/?t=15:00&tz=Seattle) monthly
+- Alternating Mondays @ 9:00 PT ([convert to your timezone](http://www.thetimezoneconverter.com/?t=9:00&tz=Seattle)) and @ 15:00 PT [convert to your timezone](http://www.thetimezoneconverter.com/?t=15:00&tz=Seattle) bi-weekly
 
 #### Meeting Resources
 - **Zoom Link**: [Join Meeting](https://zoom.us/j/95618088729) (password: 77777)

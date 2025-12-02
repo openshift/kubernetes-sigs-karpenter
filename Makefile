@@ -6,9 +6,7 @@ HELM_OPTS ?= --set logLevel=debug \
 			--set controller.resources.requests.cpu=1 \
 			--set controller.resources.requests.memory=1Gi \
 			--set controller.resources.limits.cpu=1 \
-			--set controller.resources.limits.memory=1Gi \
-			--set settings.featureGates.nodeRepair=true \
-			--set settings.featureGates.staticCapacity=true
+			--set controller.resources.limits.memory=1Gi
 
 help: ## Display help
 	@awk 'BEGIN {FS = ":.*##"; printf "Usage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z_0-9-]+:.*?##/ { printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
@@ -16,10 +14,10 @@ help: ## Display help
 presubmit: verify test licenses vulncheck ## Run all steps required for code to be checked in
 
 install-kwok: ## Install kwok provider
-	./hack/install-kwok.sh
+	UNINSTALL_KWOK=false ./hack/install-kwok.sh
 
 uninstall-kwok: ## Uninstall kwok provider
-	UNINSTALL=true ./hack/install-kwok.sh
+	UNINSTALL_KWOK=true ./hack/install-kwok.sh
 
 build-with-kind: # build with kind assumes the image will be uploaded directly onto the kind control plane, without an image repository
 	$(eval CONTROLLER_IMG=$(shell $(WITH_GOFLAGS) KO_DOCKER_REPO="$(KWOK_REPO)" ko build sigs.k8s.io/karpenter/kwok))
@@ -68,13 +66,11 @@ JUNIT_REPORT := $(if $(ARTIFACT_DIR), --ginkgo.junit-report="$(ARTIFACT_DIR)/jun
 e2etests: ## Run the e2e suite against your local cluster
 	cd test && go test \
 		-count 1 \
-		-timeout 2h \
+		-timeout 30m \
 		-v \
 		./suites/$(shell echo $(TEST_SUITE) | tr A-Z a-z)/... \
-		$(JUNIT_REPORT) \
 		--ginkgo.focus="${FOCUS}" \
-		--ginkgo.skip="${SKIP}" \
-		--ginkgo.timeout=2h \
+		--ginkgo.timeout=30m \
 		--ginkgo.grace-period=5m \
 		--ginkgo.vv
 
