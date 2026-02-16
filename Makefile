@@ -152,6 +152,7 @@ licenses: download ## Verifies dependency licenses
 	! grep -v -e 'MIT' -e 'Apache-2.0' -e 'BSD-3-Clause' -e 'BSD-2-Clause' -e 'ISC' -e 'MPL-2.0' $$LICENSEFILE
 
 verify: ## Verify code. Includes codegen, docgen, dependencies, linting, formatting, etc
+	rm -rf vendor
 	go mod tidy
 	go generate ./...
 	hack/validation/taint.sh
@@ -168,39 +169,22 @@ verify: ## Verify code. Includes codegen, docgen, dependencies, linting, formatt
 	go vet ./...
 	go tool -modfile=go.tools.mod golangci-lint-kube-api-linter run
 	cd kwok/charts && go tool -modfile=../../go.tools.mod helm-docs
+	go tool -modfile=go.tools.mod actionlint -oneline
+	go mod vendor
+	@git checkout -- go.tools.mod go.tools.sum 2>/dev/null || true
 	@git diff --quiet ||\
 		{ echo "New file modification detected in the Git working tree. Please check in before commit."; git --no-pager diff --name-only | uniq | awk '{print "  - " $$0}'; \
 		if [ "${CI}" = true ]; then\
 			exit 1;\
 		fi;}
-	go tool -modfile=go.tools.mod actionlint -oneline
 
 # UPSTREAM: <carry>: duplicates verify, but removes unnecessary steps for downstream
 .PHONY: openshift-verify
-openshift-verify: ## Verify code on OpenShift Prow CI. A stripped down copy of the "verify" target.
-	go mod tidy && go mod vendor && go mod verify
-	go generate ./...
-	hack/validation/taint.sh
-	hack/validation/requirements.sh
-	hack/validation/labels.sh
-	hack/validation/status.sh
-	cp -r pkg/apis/crds kwok/charts
-	hack/kwok/requirements.sh
-	@perl -i -pe 's/sets.Set/sets.Set[string]/g' pkg/scheduling/zz_generated.deepcopy.go
-	hack/boilerplate.sh
-	go vet ./...
-	golangci-lint run
-	@git diff --quiet ||\
-		{ echo "New file modification detected in the Git working tree. Please check in before commit."; git --no-pager diff --name-only | uniq | awk '{print "  - " $$0}'; \
-		if [ "${CI}" = true ]; then\
-			exit 1;\
-		fi;}
+openshift-verify: export GOFLAGS = -mod=readonly
+openshift-verify: verify ## Verify code on OpenShift Prow CI
 
 download: ## Recursively "go mod download" on all directories where go.mod exists
 	$(foreach dir,$(MOD_DIRS),cd $(dir) && go mod download $(newline))
-
-toolchain: ## Install developer toolchain
-	./hack/toolchain.sh
 
 # UPSTREAM: <carry>: installs toolchain for OpenShift CI.
 .PHONY: openshift-toolchain
