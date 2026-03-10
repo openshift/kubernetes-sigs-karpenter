@@ -935,18 +935,14 @@ var _ = Describe("Node Resource Level", func() {
 			Spec: v1.NodeClaimSpec{
 				Requirements: []v1.NodeSelectorRequirementWithMinValues{
 					{
-						NodeSelectorRequirement: corev1.NodeSelectorRequirement{
-							Key:      corev1.LabelInstanceTypeStable,
-							Operator: corev1.NodeSelectorOpIn,
-							Values:   []string{cloudProvider.InstanceTypes[0].Name},
-						},
+						Key:      corev1.LabelInstanceTypeStable,
+						Operator: corev1.NodeSelectorOpIn,
+						Values:   []string{cloudProvider.InstanceTypes[0].Name},
 					},
 					{
-						NodeSelectorRequirement: corev1.NodeSelectorRequirement{
-							Key:      corev1.LabelTopologyZone,
-							Operator: corev1.NodeSelectorOpIn,
-							Values:   []string{"test-zone-1"},
-						},
+						Key:      corev1.LabelTopologyZone,
+						Operator: corev1.NodeSelectorOpIn,
+						Values:   []string{"test-zone-1"},
 					},
 				},
 				NodeClassRef: &v1.NodeClassReference{
@@ -1002,11 +998,11 @@ var _ = Describe("Node Resource Level", func() {
 		cluster.NominateNodeForPod(ctx, node.Spec.ProviderID)
 
 		// Expect that the node is now nominated
-		Expect(ExpectStateNodeExists(cluster, node).Nominated()).To(BeTrue())
-		time.Sleep(time.Second * 10) // nomination window is 20s so it should still be nominated
-		Expect(ExpectStateNodeExists(cluster, node).Nominated()).To(BeTrue())
-		time.Sleep(time.Second * 11) // past 20s, node should no longer be nominated
-		Expect(ExpectStateNodeExists(cluster, node).Nominated()).To(BeFalse())
+		Expect(ExpectStateNodeExists(cluster, node).Nominated(fakeClock)).To(BeTrue())
+		fakeClock.Step(time.Second * 10) // nomination window is 20s so it should still be nominated
+		Expect(ExpectStateNodeExists(cluster, node).Nominated(fakeClock)).To(BeTrue())
+		fakeClock.Step(time.Second * 11) // past 20s, node should no longer be nominated
+		Expect(ExpectStateNodeExists(cluster, node).Nominated(fakeClock)).To(BeFalse())
 	})
 	It("should handle a node changing from no providerID to registering a providerID", func() {
 		node := test.Node()

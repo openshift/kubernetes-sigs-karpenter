@@ -33,6 +33,9 @@ oc create namespace "${ko_namespace}" || true
 # install karpenter-provider-kwok
 KWOK_REPO="${REGISTRY_HOST}/${ko_namespace}" make apply-with-openshift
 
+# wait for karpenter to be ready
+oc wait --for=condition=ready pod -l app.kubernetes.io/name=karpenter -n kube-system --timeout=300s
+
 # tests expect all existing nodes to be tainted or unschedulable before running:
 # https://github.com/kubernetes-sigs/karpenter/blob/main/test/pkg/environment/common/setup.go#L87
 echo "Tainting all worker nodes..."
