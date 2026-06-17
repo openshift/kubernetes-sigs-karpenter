@@ -18,7 +18,6 @@ package common
 
 import (
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -96,15 +95,6 @@ func (env *Environment) ExpectCleanCluster() {
 	var pods corev1.PodList
 	Expect(env.Client.List(env.Context, &pods)).To(Succeed())
 	for i := range pods.Items {
-		// UPSTREAM: <carry>: ignore any pods that are pending to be scheduled in some openshift-* namespace
-		// This is a workaround for the fact that OpenShift core component pods sometimes start/restart and become pending.
-		// Upstream test setup forces all nodes to either be tainted or unschedulable, preventing these pods from being scheduled.
-		//
-		// Note: this only matters on single node infrastructure (e.g. 1 node with both control-plane and worker node roles)
-		// For regular infrastructure topology, the pods would simply just schedule to the already tainted control plane nodes.
-		if strings.HasPrefix(pods.Items[i].Namespace, "openshift") {
-			continue
-		}
 		Expect(pod.IsProvisionable(&pods.Items[i])).To(BeFalse(),
 			fmt.Sprintf("expected to have no provisionable pods, found %s/%s", pods.Items[i].Namespace, pods.Items[i].Name))
 		Expect(pods.Items[i].Namespace).ToNot(Equal("default"),
@@ -181,7 +171,7 @@ func (env *Environment) CleanupObjects(cleanableObjects ...client.Object) {
 					g.Expect(env.ExpectTestingFinalizerRemoved(&metaList.Items[i])).To(Succeed())
 					g.Expect(client.IgnoreNotFound(env.Client.Delete(env, &metaList.Items[i],
 						client.PropagationPolicy(metav1.DeletePropagationForeground),
-						&client.DeleteOptions{GracePeriodSeconds: lo.ToPtr(int64(0))}))).To(Succeed())
+						&client.DeleteOptions{GracePeriodSeconds: new(int64(0))}))).To(Succeed())
 				})
 				// If the deletes eventually succeed, we should have no elements here at the end of the test
 				g.Expect(env.Client.List(env, metaList, client.HasLabels([]string{test.DiscoveryLabel}), client.Limit(1))).To(Succeed())
