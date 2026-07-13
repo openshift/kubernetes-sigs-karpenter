@@ -21,7 +21,7 @@ tools() {
     go mod download -modfile=go.tools.mod
 
     # install ko because it is not in the tools.mod file
-    go install github.com/google/ko@latest
+    go install github.com/google/ko@v0.18.1
 }
 
 kubebuilder() {
