@@ -21,6 +21,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/samber/lo"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -139,7 +141,7 @@ var _ = Describe("Disruption", func() {
 	})
 	It("should not set consolidatable condition for Static Nodepool", func() {
 		nodePool = test.StaticNodePool()
-		nodePool.Spec.Replicas = new(int64(1))
+		nodePool.Spec.Replicas = lo.ToPtr(int64(1))
 		nodeClaim, node = test.NodeClaimAndNode(v1.NodeClaim{
 			ObjectMeta: metav1.ObjectMeta{
 				Labels: map[string]string{

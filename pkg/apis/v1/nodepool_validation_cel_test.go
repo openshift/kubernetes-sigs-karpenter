@@ -189,7 +189,7 @@ var _ = Describe("CEL/Validation", func() {
 		It("should fail when creating a budget with an invalid cron", func() {
 			nodePool.Spec.Disruption.Budgets = []Budget{{
 				Nodes:    "10",
-				Schedule: new("*"),
+				Schedule: lo.ToPtr("*"),
 				Duration: &metav1.Duration{Duration: lo.Must(time.ParseDuration("20m"))},
 			}}
 			Expect(env.Client.Create(ctx, nodePool)).ToNot(Succeed())
@@ -197,7 +197,7 @@ var _ = Describe("CEL/Validation", func() {
 		It("should fail when creating a schedule with less than 5 entries", func() {
 			nodePool.Spec.Disruption.Budgets = []Budget{{
 				Nodes:    "10",
-				Schedule: new("* * * * "),
+				Schedule: lo.ToPtr("* * * * "),
 				Duration: &metav1.Duration{Duration: lo.Must(time.ParseDuration("20m"))},
 			}}
 			Expect(env.Client.Create(ctx, nodePool)).ToNot(Succeed())
@@ -205,7 +205,7 @@ var _ = Describe("CEL/Validation", func() {
 		It("should fail when creating a budget with a negative duration", func() {
 			nodePool.Spec.Disruption.Budgets = []Budget{{
 				Nodes:    "10",
-				Schedule: new("* * * * *"),
+				Schedule: lo.ToPtr("* * * * *"),
 				Duration: &metav1.Duration{Duration: lo.Must(time.ParseDuration("-20m"))},
 			}}
 			Expect(env.Client.Create(ctx, nodePool)).ToNot(Succeed())
@@ -213,7 +213,7 @@ var _ = Describe("CEL/Validation", func() {
 		It("should fail when creating a budget with a seconds duration", func() {
 			nodePool.Spec.Disruption.Budgets = []Budget{{
 				Nodes:    "10",
-				Schedule: new("* * * * *"),
+				Schedule: lo.ToPtr("* * * * *"),
 				Duration: &metav1.Duration{Duration: lo.Must(time.ParseDuration("30s"))},
 			}}
 			Expect(env.Client.Create(ctx, nodePool)).ToNot(Succeed())
@@ -239,7 +239,7 @@ var _ = Describe("CEL/Validation", func() {
 		It("should fail when creating a budget with a cron but no duration", func() {
 			nodePool.Spec.Disruption.Budgets = []Budget{{
 				Nodes:    "10",
-				Schedule: new("* * * * *"),
+				Schedule: lo.ToPtr("* * * * *"),
 			}}
 			Expect(env.Client.Create(ctx, nodePool)).ToNot(Succeed())
 		})
@@ -253,7 +253,7 @@ var _ = Describe("CEL/Validation", func() {
 		It("should succeed when creating a budget with both duration and cron", func() {
 			nodePool.Spec.Disruption.Budgets = []Budget{{
 				Nodes:    "10",
-				Schedule: new("* * * * *"),
+				Schedule: lo.ToPtr("* * * * *"),
 				Duration: &metav1.Duration{Duration: lo.Must(time.ParseDuration("20m"))},
 			}}
 			Expect(env.Client.Create(ctx, nodePool)).To(Succeed())
@@ -261,7 +261,7 @@ var _ = Describe("CEL/Validation", func() {
 		It("should succeed when creating a budget with hours and minutes in duration", func() {
 			nodePool.Spec.Disruption.Budgets = []Budget{{
 				Nodes:    "10",
-				Schedule: new("* * * * *"),
+				Schedule: lo.ToPtr("* * * * *"),
 				Duration: &metav1.Duration{Duration: lo.Must(time.ParseDuration("2h20m"))},
 			}}
 			Expect(env.Client.Create(ctx, nodePool)).To(Succeed())
@@ -275,7 +275,7 @@ var _ = Describe("CEL/Validation", func() {
 		It("should succeed when creating a budget with special cased crons", func() {
 			nodePool.Spec.Disruption.Budgets = []Budget{{
 				Nodes:    "10",
-				Schedule: new("@annually"),
+				Schedule: lo.ToPtr("@annually"),
 				Duration: &metav1.Duration{Duration: lo.Must(time.ParseDuration("20m"))},
 			}}
 			Expect(env.Client.Create(ctx, nodePool)).To(Succeed())
@@ -284,12 +284,12 @@ var _ = Describe("CEL/Validation", func() {
 			nodePool.Spec.Disruption.Budgets = []Budget{
 				{
 					Nodes:    "10",
-					Schedule: new("@annually"),
+					Schedule: lo.ToPtr("@annually"),
 					Duration: &metav1.Duration{Duration: lo.Must(time.ParseDuration("20m"))},
 				},
 				{
 					Nodes:    "10",
-					Schedule: new("*"),
+					Schedule: lo.ToPtr("*"),
 					Duration: &metav1.Duration{Duration: lo.Must(time.ParseDuration("20m"))},
 				}}
 			Expect(env.Client.Create(ctx, nodePool)).ToNot(Succeed())
@@ -302,7 +302,7 @@ var _ = Describe("CEL/Validation", func() {
 				},
 				{
 					Nodes:    "10",
-					Schedule: new("* * * * *"),
+					Schedule: lo.ToPtr("* * * * *"),
 					Duration: &metav1.Duration{Duration: lo.Must(time.ParseDuration("20m"))},
 				},
 				{
@@ -314,7 +314,7 @@ var _ = Describe("CEL/Validation", func() {
 		DescribeTable("should succeed when creating a budget with valid reasons", func(reason DisruptionReason) {
 			nodePool.Spec.Disruption.Budgets = []Budget{{
 				Nodes:    "10",
-				Schedule: new("* * * * *"),
+				Schedule: lo.ToPtr("* * * * *"),
 				Duration: &metav1.Duration{Duration: lo.Must(time.ParseDuration("20m"))},
 				Reasons:  []DisruptionReason{reason},
 			}}
@@ -328,7 +328,7 @@ var _ = Describe("CEL/Validation", func() {
 		DescribeTable("should fail when creating a budget with invalid reasons", func(reason string) {
 			nodePool.Spec.Disruption.Budgets = []Budget{{
 				Nodes:    "10",
-				Schedule: new("* * * * *"),
+				Schedule: lo.ToPtr("* * * * *"),
 				Duration: &metav1.Duration{Duration: lo.Must(time.ParseDuration("20m"))},
 				Reasons:  []DisruptionReason{DisruptionReason(reason)},
 			}}
@@ -342,7 +342,7 @@ var _ = Describe("CEL/Validation", func() {
 		It("should allow setting multiple reasons", func() {
 			nodePool.Spec.Disruption.Budgets = []Budget{{
 				Nodes:    "10",
-				Schedule: new("* * * * *"),
+				Schedule: lo.ToPtr("* * * * *"),
 				Duration: &metav1.Duration{Duration: lo.Must(time.ParseDuration("20m"))},
 				Reasons:  []DisruptionReason{DisruptionReasonDrifted, DisruptionReasonEmpty},
 			}}
@@ -582,19 +582,19 @@ var _ = Describe("CEL/Validation", func() {
 		})
 		It("should error when minValues is negative", func() {
 			nodePool.Spec.Template.Spec.Requirements = []NodeSelectorRequirementWithMinValues{
-				{Key: v1.LabelInstanceTypeStable, Operator: v1.NodeSelectorOpIn, Values: []string{"insance-type-1"}, MinValues: new(-1)},
+				{Key: v1.LabelInstanceTypeStable, Operator: v1.NodeSelectorOpIn, Values: []string{"insance-type-1"}, MinValues: lo.ToPtr(-1)},
 			}
 			Expect(env.Client.Create(ctx, nodePool)).ToNot(Succeed())
 		})
 		It("should error when minValues is zero", func() {
 			nodePool.Spec.Template.Spec.Requirements = []NodeSelectorRequirementWithMinValues{
-				{Key: v1.LabelInstanceTypeStable, Operator: v1.NodeSelectorOpIn, Values: []string{"insance-type-1"}, MinValues: new(0)},
+				{Key: v1.LabelInstanceTypeStable, Operator: v1.NodeSelectorOpIn, Values: []string{"insance-type-1"}, MinValues: lo.ToPtr(0)},
 			}
 			Expect(env.Client.Create(ctx, nodePool)).ToNot(Succeed())
 		})
 		It("should error when minValues is more than 50", func() {
 			nodePool.Spec.Template.Spec.Requirements = []NodeSelectorRequirementWithMinValues{
-				{Key: v1.LabelInstanceTypeStable, Operator: v1.NodeSelectorOpExists, MinValues: new(51)},
+				{Key: v1.LabelInstanceTypeStable, Operator: v1.NodeSelectorOpExists, MinValues: lo.ToPtr(51)},
 			}
 			Expect(env.Client.Create(ctx, nodePool)).ToNot(Succeed())
 		})
@@ -610,7 +610,7 @@ var _ = Describe("CEL/Validation", func() {
 		})
 		It("should error when minValues is greater than the number of unique values specified within In operator", func() {
 			nodePool.Spec.Template.Spec.Requirements = []NodeSelectorRequirementWithMinValues{
-				{Key: v1.LabelInstanceTypeStable, Operator: v1.NodeSelectorOpIn, Values: []string{"insance-type-1"}, MinValues: new(2)},
+				{Key: v1.LabelInstanceTypeStable, Operator: v1.NodeSelectorOpIn, Values: []string{"insance-type-1"}, MinValues: lo.ToPtr(2)},
 			}
 			Expect(env.Client.Create(ctx, nodePool)).ToNot(Succeed())
 		})
@@ -764,19 +764,19 @@ var _ = Describe("CEL/Validation", func() {
 	Context("Replicas", func() {
 		Context("Valid Replicas Values", func() {
 			It("should succeed when replicas is set to a positive value", func() {
-				nodePool.Spec.Replicas = new(int64(5))
+				nodePool.Spec.Replicas = lo.ToPtr(int64(5))
 				Expect(env.Client.Create(ctx, nodePool)).To(Succeed())
 				Expect(nodePool.RuntimeValidate(ctx)).To(Succeed())
 			})
 
 			It("should succeed when replicas is set to zero", func() {
-				nodePool.Spec.Replicas = new(int64(0))
+				nodePool.Spec.Replicas = lo.ToPtr(int64(0))
 				Expect(env.Client.Create(ctx, nodePool)).To(Succeed())
 				Expect(nodePool.RuntimeValidate(ctx)).To(Succeed())
 			})
 
 			It("should succeed when replicas is set to a large value", func() {
-				nodePool.Spec.Replicas = new(int64(1000))
+				nodePool.Spec.Replicas = lo.ToPtr(int64(1000))
 				Expect(env.Client.Create(ctx, nodePool)).To(Succeed())
 				Expect(nodePool.RuntimeValidate(ctx)).To(Succeed())
 			})
@@ -784,7 +784,7 @@ var _ = Describe("CEL/Validation", func() {
 
 		Context("Invalid Replicas Values", func() {
 			It("should fail when replicas is set to a negative value", func() {
-				nodePool.Spec.Replicas = new(int64(-100))
+				nodePool.Spec.Replicas = lo.ToPtr(int64(-100))
 				Expect(env.Client.Create(ctx, nodePool)).ToNot(Succeed())
 			})
 		})
@@ -792,7 +792,7 @@ var _ = Describe("CEL/Validation", func() {
 		DescribeTable("should fail for incompatible fields",
 			func(modify func(*NodePool)) {
 				modify(nodePool)
-				nodePool.Spec.Replicas = new(int64(10))
+				nodePool.Spec.Replicas = lo.ToPtr(int64(10))
 				Expect(env.Client.Create(ctx, nodePool)).ToNot(Succeed())
 			},
 			Entry("limits.cpu", func(np *NodePool) {
@@ -816,14 +816,14 @@ var _ = Describe("CEL/Validation", func() {
 				}
 			}),
 			Entry("weight", func(np *NodePool) {
-				np.Spec.Weight = new(int32(25))
+				np.Spec.Weight = lo.ToPtr(int32(25))
 			}),
 		)
 
 		DescribeTable("should succeed for compatible fields",
 			func(modify func(*NodePool)) {
 				modify(nodePool)
-				nodePool.Spec.Replicas = new(int64(10))
+				nodePool.Spec.Replicas = lo.ToPtr(int64(10))
 				Expect(env.Client.Create(ctx, nodePool)).To(Succeed())
 				Expect(nodePool.RuntimeValidate(ctx)).To(Succeed())
 			},
@@ -839,13 +839,13 @@ var _ = Describe("CEL/Validation", func() {
 					Budgets: []Budget{
 						{
 							Nodes:    "20%",
-							Schedule: new("0 9 * * mon-fri"),
+							Schedule: lo.ToPtr("0 9 * * mon-fri"),
 							Duration: &metav1.Duration{Duration: 8 * time.Hour},
 							Reasons:  []DisruptionReason{DisruptionReasonDrifted, DisruptionReasonEmpty},
 						},
 						{
 							Nodes:    "30%",
-							Schedule: new("0 22 * * sat,sun"),
+							Schedule: lo.ToPtr("0 22 * * sat,sun"),
 							Duration: &metav1.Duration{Duration: 4 * time.Hour},
 							Reasons:  []DisruptionReason{DisruptionReasonUnderutilized},
 						},
@@ -875,7 +875,7 @@ var _ = Describe("CEL/Validation", func() {
 			}),
 			Entry("requirements", func(np *NodePool) {
 				np.Spec.Template.Spec.Requirements = []NodeSelectorRequirementWithMinValues{
-					{Key: v1.LabelInstanceTypeStable, Operator: v1.NodeSelectorOpIn, Values: []string{"m5.large", "m5.xlarge", "m5.2xlarge", "c5.large", "c5.xlarge", "r5.large", "r5.xlarge"}, MinValues: new(3)},
+					{Key: v1.LabelInstanceTypeStable, Operator: v1.NodeSelectorOpIn, Values: []string{"m5.large", "m5.xlarge", "m5.2xlarge", "c5.large", "c5.xlarge", "r5.large", "r5.xlarge"}, MinValues: lo.ToPtr(3)},
 					{Key: v1.LabelTopologyZone, Operator: v1.NodeSelectorOpIn, Values: []string{"us-west-2a", "us-west-2b", "us-west-2c"}},
 					{Key: CapacityTypeLabelKey, Operator: v1.NodeSelectorOpIn, Values: []string{"on-demand", "spot"}},
 					{Key: v1.LabelArchStable, Operator: v1.NodeSelectorOpIn, Values: []string{"amd64"}},
@@ -894,18 +894,18 @@ var _ = Describe("CEL/Validation", func() {
 		Context("Update Scenarios", func() {
 			It("should succeed when increasing replicas in a NodePool", func() {
 				// Create NodePool with replicas
-				nodePool.Spec.Replicas = new(int64(3))
+				nodePool.Spec.Replicas = lo.ToPtr(int64(3))
 				Expect(env.Client.Create(ctx, nodePool)).To(Succeed())
 
 				// Update the replicas
-				nodePool.Spec.Replicas = new(int64(5))
+				nodePool.Spec.Replicas = lo.ToPtr(int64(5))
 				Expect(env.Client.Update(ctx, nodePool)).To(Succeed())
 				Expect(nodePool.RuntimeValidate(ctx)).To(Succeed())
 			})
 
 			It("should fail when changing the NodePool from static to dynamic", func() {
 				// Create NodePool without replicas
-				nodePool.Spec.Replicas = new(int64(3))
+				nodePool.Spec.Replicas = lo.ToPtr(int64(3))
 				Expect(env.Client.Create(ctx, nodePool)).To(Succeed())
 
 				// Update to remove replicas
@@ -918,13 +918,13 @@ var _ = Describe("CEL/Validation", func() {
 				Expect(env.Client.Create(ctx, nodePool)).To(Succeed())
 
 				// Update to add replicas field
-				nodePool.Spec.Replicas = new(int64(3))
+				nodePool.Spec.Replicas = lo.ToPtr(int64(3))
 				Expect(env.Client.Update(ctx, nodePool)).ToNot(Succeed())
 			})
 
 			It("should succeed when changing the static NodePool nodes limit", func() {
 				// Create NodePool with limits
-				nodePool.Spec.Replicas = new(int64(3))
+				nodePool.Spec.Replicas = lo.ToPtr(int64(3))
 				nodePool.Spec.Limits = Limits{
 					"nodes": resource.MustParse("10"),
 				}

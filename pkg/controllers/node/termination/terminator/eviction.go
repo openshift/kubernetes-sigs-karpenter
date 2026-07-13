@@ -173,7 +173,7 @@ func (q *Queue) Reconcile(ctx context.Context, pod *corev1.Pod) (reconcile.Resul
 		&policyv1.Eviction{
 			DeleteOptions: &metav1.DeleteOptions{
 				Preconditions: &metav1.Preconditions{
-					UID: new(pod.UID),
+					UID: lo.ToPtr(pod.UID),
 				},
 			},
 		}); err != nil {

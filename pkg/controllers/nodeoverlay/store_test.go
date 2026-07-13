@@ -19,6 +19,7 @@ package nodeoverlay
 import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
@@ -106,7 +107,7 @@ var _ = Describe("Store Apply Selective Copy", func() {
 				it := fake.NewInstanceType("m5.large")
 				// Use actual requirements string from the generated instance type
 				return map[string]*priceUpdate{
-					it.Offerings[0].Requirements.String(): {OverlayUpdate: new("+0.01"), lowestWeight: new(int32(10))},
+					it.Offerings[0].Requirements.String(): {OverlayUpdate: lo.ToPtr("+0.01"), lowestWeight: lo.ToPtr(int32(10))},
 				}
 			}(),
 			&capacityUpdate{OverlayUpdate: corev1.ResourceList{}},
@@ -146,7 +147,7 @@ var _ = Describe("Store Apply Selective Copy", func() {
 			func() map[string]*priceUpdate {
 				it := fake.NewInstanceType("m5.large")
 				return map[string]*priceUpdate{
-					it.Offerings[0].Requirements.String(): {OverlayUpdate: new("+0.01"), lowestWeight: new(int32(10))},
+					it.Offerings[0].Requirements.String(): {OverlayUpdate: lo.ToPtr("+0.01"), lowestWeight: lo.ToPtr(int32(10))},
 				}
 			}(),
 			&capacityUpdate{
@@ -194,7 +195,7 @@ var _ = Describe("Store Apply Correctness", func() {
 					instanceType.Name: &instanceTypeUpdate{
 						Price: map[string]*priceUpdate{
 							// Only overlay the first offering
-							instanceType.Offerings[0].Requirements.String(): {OverlayUpdate: new("+0.01"), lowestWeight: new(int32(10))},
+							instanceType.Offerings[0].Requirements.String(): {OverlayUpdate: lo.ToPtr("+0.01"), lowestWeight: lo.ToPtr(int32(10))},
 						},
 						Capacity: &capacityUpdate{OverlayUpdate: corev1.ResourceList{}},
 					},
@@ -280,7 +281,7 @@ var _ = Describe("Store Apply Isolation Between NodePools", func() {
 			"nodepool-a": {
 				instanceType.Name: &instanceTypeUpdate{
 					Price: map[string]*priceUpdate{
-						instanceType.Offerings[0].Requirements.String(): {OverlayUpdate: new("+10%"), lowestWeight: new(int32(10))},
+						instanceType.Offerings[0].Requirements.String(): {OverlayUpdate: lo.ToPtr("+10%"), lowestWeight: lo.ToPtr(int32(10))},
 					},
 					Capacity: &capacityUpdate{OverlayUpdate: corev1.ResourceList{}},
 				},
@@ -288,7 +289,7 @@ var _ = Describe("Store Apply Isolation Between NodePools", func() {
 			"nodepool-b": {
 				instanceType.Name: &instanceTypeUpdate{
 					Price: map[string]*priceUpdate{
-						instanceType.Offerings[0].Requirements.String(): {OverlayUpdate: new("-5%"), lowestWeight: new(int32(10))},
+						instanceType.Offerings[0].Requirements.String(): {OverlayUpdate: lo.ToPtr("-5%"), lowestWeight: lo.ToPtr(int32(10))},
 					},
 					Capacity: &capacityUpdate{OverlayUpdate: corev1.ResourceList{}},
 				},
@@ -385,7 +386,7 @@ var _ = Describe("NodeOverlay Store Integration", func() {
 		// Apply overlays to m5.large: add hugepages and adjust spot pricing
 		overlay := v1alpha1.NodeOverlay{
 			Spec: v1alpha1.NodeOverlaySpec{
-				Weight: new(int32(100)),
+				Weight: lo.ToPtr(int32(100)),
 				Capacity: corev1.ResourceList{
 					"hugepages-2Mi": resource.MustParse("100Mi"),
 				},

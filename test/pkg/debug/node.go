@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/samber/lo"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	controllerruntime "sigs.k8s.io/controller-runtime"
@@ -78,6 +80,6 @@ func (c *NodeController) Register(ctx context.Context, m manager.Manager) error 
 				return o.GetLabels()[v1.NodePoolLabelKey] != ""
 			}),
 		)).
-		WithOptions(controller.Options{MaxConcurrentReconciles: 10, SkipNameValidation: new(true)}).
+		WithOptions(controller.Options{MaxConcurrentReconciles: 10, SkipNameValidation: lo.ToPtr(true)}).
 		Complete(c)
 }
