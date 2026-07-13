@@ -46,7 +46,7 @@ var _ = Describe("StaticDrift", func() {
 	BeforeEach(func() {
 		nodePool = test.StaticNodePool(v1.NodePool{
 			Spec: v1.NodePoolSpec{
-				Replicas: new(int64(1)), // Static NodePool with 3 replicas
+				Replicas: lo.ToPtr(int64(1)), // Static NodePool with 3 replicas
 				Disruption: v1.Disruption{
 					// Disrupt away!
 					Budgets: []v1.Budget{{
@@ -80,7 +80,7 @@ var _ = Describe("StaticDrift", func() {
 		var nodes []*corev1.Node
 
 		BeforeEach(func() {
-			nodePool.Spec.Replicas = new(int64(numNodes))
+			nodePool.Spec.Replicas = lo.ToPtr(int64(numNodes))
 		})
 
 		It("should respect disruption budgets (Nodes Count) for static drift", func() {
@@ -207,7 +207,7 @@ var _ = Describe("StaticDrift", func() {
 			nodePool1 := test.StaticNodePool(v1.NodePool{
 				ObjectMeta: metav1.ObjectMeta{Name: "static-nodepool-1"},
 				Spec: v1.NodePoolSpec{
-					Replicas: new(int64(4)),
+					Replicas: lo.ToPtr(int64(4)),
 					Disruption: v1.Disruption{
 						Budgets: []v1.Budget{{
 							Reasons: []v1.DisruptionReason{v1.DisruptionReasonDrifted},
@@ -219,7 +219,7 @@ var _ = Describe("StaticDrift", func() {
 			nodePool2 := test.StaticNodePool(v1.NodePool{
 				ObjectMeta: metav1.ObjectMeta{Name: "static-nodepool-2"},
 				Spec: v1.NodePoolSpec{
-					Replicas: new(int64(3)),
+					Replicas: lo.ToPtr(int64(3)),
 					Disruption: v1.Disruption{
 						Budgets: []v1.Budget{{
 							Reasons: []v1.DisruptionReason{v1.DisruptionReasonDrifted},
@@ -231,7 +231,7 @@ var _ = Describe("StaticDrift", func() {
 			nodePool3 := test.StaticNodePool(v1.NodePool{
 				ObjectMeta: metav1.ObjectMeta{Name: "static-nodepool-3"},
 				Spec: v1.NodePoolSpec{
-					Replicas: new(int64(2)),
+					Replicas: lo.ToPtr(int64(2)),
 					Disruption: v1.Disruption{
 						Budgets: []v1.Budget{{
 							Reasons: []v1.DisruptionReason{v1.DisruptionReasonDrifted},
@@ -367,7 +367,7 @@ var _ = Describe("StaticDrift", func() {
 		var nodes []*corev1.Node
 
 		It("should not drift nodes when we cannot acquire limits", func() {
-			nodePool.Spec.Replicas = new(int64(5))
+			nodePool.Spec.Replicas = lo.ToPtr(int64(5))
 			nodePool.Spec.Limits = v1.Limits{
 				resources.Node: resource.MustParse(strconv.Itoa(5)),
 			}
@@ -407,7 +407,7 @@ var _ = Describe("StaticDrift", func() {
 			Expect(recorder.Calls(events.DisruptionBlocked)).To(BeNumerically(">", 0))
 		})
 		It("should drift nodes when we can acquire limits", func() {
-			nodePool.Spec.Replicas = new(int64(5))
+			nodePool.Spec.Replicas = lo.ToPtr(int64(5))
 			nodePool.Spec.Limits = v1.Limits{
 				resources.Node: resource.MustParse(strconv.Itoa(5)),
 			}
@@ -466,7 +466,7 @@ var _ = Describe("StaticDrift", func() {
 			})
 		})
 		It("should drift partially when we can acquire some limits", func() {
-			nodePool.Spec.Replicas = new(int64(5))
+			nodePool.Spec.Replicas = lo.ToPtr(int64(5))
 			nodePool.Spec.Limits = v1.Limits{
 				resources.Node: resource.MustParse(strconv.Itoa(7)),
 			}
@@ -524,7 +524,7 @@ var _ = Describe("StaticDrift", func() {
 			})
 		})
 		It("should keep drifting partially when we can acquire some limits for each reconcile", func() {
-			nodePool.Spec.Replicas = new(int64(5))
+			nodePool.Spec.Replicas = lo.ToPtr(int64(5))
 			nodePool.Spec.Limits = v1.Limits{
 				resources.Node: resource.MustParse(strconv.Itoa(6)),
 			}
@@ -581,7 +581,7 @@ var _ = Describe("StaticDrift", func() {
 			}
 		})
 		It("should wait until nodes are deprovisioned when we are overscaled", func() {
-			nodePool.Spec.Replicas = new(int64(1)) // Target 1, but have 2
+			nodePool.Spec.Replicas = lo.ToPtr(int64(1)) // Target 1, but have 2
 			numNodes = 2
 			nodeClaims, nodes = test.NodeClaimsAndNodes(numNodes, v1.NodeClaim{
 				ObjectMeta: metav1.ObjectMeta{
@@ -677,7 +677,7 @@ var _ = Describe("StaticDrift", func() {
 			nodePool1 := test.StaticNodePool(v1.NodePool{
 				ObjectMeta: metav1.ObjectMeta{Name: "nodepool-1"},
 				Spec: v1.NodePoolSpec{
-					Replicas: new(int64(3)),
+					Replicas: lo.ToPtr(int64(3)),
 					Disruption: v1.Disruption{
 						Budgets: []v1.Budget{{Nodes: "100%"}},
 					},
@@ -686,7 +686,7 @@ var _ = Describe("StaticDrift", func() {
 			nodePool2 := test.StaticNodePool(v1.NodePool{
 				ObjectMeta: metav1.ObjectMeta{Name: "nodepool-2"},
 				Spec: v1.NodePoolSpec{
-					Replicas: new(int64(2)),
+					Replicas: lo.ToPtr(int64(2)),
 					Disruption: v1.Disruption{
 						Budgets: []v1.Budget{{Nodes: "100%"}},
 					},
@@ -698,7 +698,7 @@ var _ = Describe("StaticDrift", func() {
 			nodePool3 := test.StaticNodePool(v1.NodePool{
 				ObjectMeta: metav1.ObjectMeta{Name: "nodepool-3"},
 				Spec: v1.NodePoolSpec{
-					Replicas: new(int64(2)),
+					Replicas: lo.ToPtr(int64(2)),
 					Disruption: v1.Disruption{
 						Budgets: []v1.Budget{{Nodes: "100%"}},
 					},
@@ -829,7 +829,7 @@ var _ = Describe("StaticDrift", func() {
 	})
 	Context("Edge Cases", func() {
 		It("should handle zero replicas", func() {
-			nodePool.Spec.Replicas = new(int64(0))
+			nodePool.Spec.Replicas = lo.ToPtr(int64(0))
 			nodeClaim.StatusConditions().SetTrue(v1.ConditionTypeDrifted)
 			ExpectApplied(ctx, env.Client, nodePool, nodeClaim, node)
 
@@ -841,7 +841,7 @@ var _ = Describe("StaticDrift", func() {
 			Expect(cmds).To(HaveLen(0))
 		})
 		It("should handle missing node limits gracefully", func() {
-			nodePool.Spec.Replicas = new(int64(5))
+			nodePool.Spec.Replicas = lo.ToPtr(int64(5))
 			nodePool.Spec.Limits = nil // No limits set
 
 			nodeClaims, nodes := test.NodeClaimsAndNodes(5, v1.NodeClaim{
@@ -880,7 +880,7 @@ var _ = Describe("StaticDrift", func() {
 		})
 		It("should ignore nodes without the drifted status condition", func() {
 			_ = nodeClaim.StatusConditions().Clear(v1.ConditionTypeDrifted)
-			nodePool.Spec.Replicas = new(int64(1))
+			nodePool.Spec.Replicas = lo.ToPtr(int64(1))
 			ExpectApplied(ctx, env.Client, nodeClaim, node, nodePool)
 
 			// inform cluster state about nodes and nodeclaims
@@ -895,7 +895,7 @@ var _ = Describe("StaticDrift", func() {
 			Expect(cmds).To(HaveLen(0))
 		})
 		It("should ignore nodes with the drifted status condition set to false", func() {
-			nodePool.Spec.Replicas = new(int64(1))
+			nodePool.Spec.Replicas = lo.ToPtr(int64(1))
 			nodeClaim.StatusConditions().SetFalse(v1.ConditionTypeDrifted, "NotDrifted", "NotDrifted")
 			ExpectApplied(ctx, env.Client, nodeClaim, node, nodePool)
 
@@ -911,7 +911,7 @@ var _ = Describe("StaticDrift", func() {
 			Expect(cmds).To(HaveLen(0))
 		})
 		It("should ignore nodes with the karpenter.sh/do-not-disrupt annotation", func() {
-			nodePool.Spec.Replicas = new(int64(1))
+			nodePool.Spec.Replicas = lo.ToPtr(int64(1))
 			node.Annotations = lo.Assign(node.Annotations, map[string]string{v1.DoNotDisruptAnnotationKey: "true"})
 			ExpectApplied(ctx, env.Client, nodeClaim, node, nodePool)
 

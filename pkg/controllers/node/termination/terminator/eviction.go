@@ -275,7 +275,7 @@ func (q *Queue) evict(ctx context.Context, pod *corev1.Pod) (reconcile.Result, e
 		&policyv1.Eviction{
 			DeleteOptions: &metav1.DeleteOptions{
 				Preconditions: &metav1.Preconditions{
-					UID: new(pod.UID),
+					UID: lo.ToPtr(pod.UID),
 				},
 			},
 		}); err != nil {

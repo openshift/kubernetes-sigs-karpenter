@@ -20,7 +20,8 @@ import (
 	"context"
 	"time"
 
-	. "github.com/onsi/ginkgo/v2"
+	"github.com/samber/lo"
+
 	. "github.com/onsi/gomega"
 	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
@@ -266,8 +267,8 @@ func churn(nodes []*corev1.Node, nodeClaims []*v1.NodeClaim) {
 					Kind:               "ReplicaSet",
 					Name:               rs.Name,
 					UID:                rs.UID,
-					Controller:         new(true),
-					BlockOwnerDeletion: new(true),
+					Controller:         lo.ToPtr(true),
+					BlockOwnerDeletion: lo.ToPtr(true),
 				},
 			}}})
 	ExpectApplied(ctx, env.Client, pods[0])

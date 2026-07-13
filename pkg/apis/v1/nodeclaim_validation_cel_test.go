@@ -223,19 +223,19 @@ var _ = Describe("Validation", func() {
 		})
 		It("should error when minValues is negative", func() {
 			nodeClaim.Spec.Requirements = []NodeSelectorRequirementWithMinValues{
-				{Key: v1.LabelInstanceTypeStable, Operator: v1.NodeSelectorOpIn, Values: []string{"insance-type-1"}, MinValues: new(-1)},
+				{Key: v1.LabelInstanceTypeStable, Operator: v1.NodeSelectorOpIn, Values: []string{"insance-type-1"}, MinValues: lo.ToPtr(-1)},
 			}
 			Expect(env.Client.Create(ctx, nodeClaim)).ToNot(Succeed())
 		})
 		It("should error when minValues is zero", func() {
 			nodeClaim.Spec.Requirements = []NodeSelectorRequirementWithMinValues{
-				{Key: v1.LabelInstanceTypeStable, Operator: v1.NodeSelectorOpIn, Values: []string{"insance-type-1"}, MinValues: new(0)},
+				{Key: v1.LabelInstanceTypeStable, Operator: v1.NodeSelectorOpIn, Values: []string{"insance-type-1"}, MinValues: lo.ToPtr(0)},
 			}
 			Expect(env.Client.Create(ctx, nodeClaim)).ToNot(Succeed())
 		})
 		It("should error when minValues is more than 50", func() {
 			nodeClaim.Spec.Requirements = []NodeSelectorRequirementWithMinValues{
-				{Key: v1.LabelInstanceTypeStable, Operator: v1.NodeSelectorOpExists, MinValues: new(51)},
+				{Key: v1.LabelInstanceTypeStable, Operator: v1.NodeSelectorOpExists, MinValues: lo.ToPtr(51)},
 			}
 			Expect(env.Client.Create(ctx, nodeClaim)).ToNot(Succeed())
 		})
@@ -251,7 +251,7 @@ var _ = Describe("Validation", func() {
 		})
 		It("should error when minValues is greater than the number of unique values specified within In operator", func() {
 			nodeClaim.Spec.Requirements = []NodeSelectorRequirementWithMinValues{
-				{Key: v1.LabelInstanceTypeStable, Operator: v1.NodeSelectorOpIn, Values: []string{"insance-type-1"}, MinValues: new(2)},
+				{Key: v1.LabelInstanceTypeStable, Operator: v1.NodeSelectorOpIn, Values: []string{"insance-type-1"}, MinValues: lo.ToPtr(2)},
 			}
 			Expect(env.Client.Create(ctx, nodeClaim)).ToNot(Succeed())
 		})

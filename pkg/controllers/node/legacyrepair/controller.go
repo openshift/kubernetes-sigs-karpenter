@@ -237,7 +237,7 @@ func (c *Controller) findUnhealthyConditions(node *corev1.Node) (nc *corev1.Node
 			terminationTime := nodeCondition.LastTransitionTime.Add(policy.TolerationDuration)
 			// Determine requeue time
 			if requeueTime.IsZero() || requeueTime.After(terminationTime) {
-				nc = new(nodeCondition)
+				nc = lo.ToPtr(nodeCondition)
 				cpTerminationDuration = policy.TolerationDuration
 				requeueTime = terminationTime
 			}
@@ -285,11 +285,12 @@ func (c *Controller) areNodesHealthy(ctx context.Context, opts ...client.ListOpt
 		return false, err
 	}
 	unhealthyNodeCount := lo.CountBy(nodeList.Items, func(node corev1.Node) bool {
-		return lo.ContainsBy(c.policies, func(policy replacePolicy) bool {
-			return policy.matches(nodeutils.GetCondition(new(node), policy.ConditionType))
+		_, found := lo.Find(c.cloudProvider.RepairPolicies(), func(policy cloudprovider.RepairPolicy) bool {
+			nodeCondition := nodeutils.GetCondition(lo.ToPtr(node), policy.ConditionType)
+			return nodeCondition.Status == policy.ConditionStatus
 		})
 	})
-	threshold := lo.Must(intstr.GetScaledValueFromIntOrPercent(new(allowedUnhealthyPercent), len(nodeList.Items), true))
+	threshold := lo.Must(intstr.GetScaledValueFromIntOrPercent(lo.ToPtr(allowedUnhealthyPercent), len(nodeList.Items), true))
 	return unhealthyNodeCount <= threshold, nil
 }
 

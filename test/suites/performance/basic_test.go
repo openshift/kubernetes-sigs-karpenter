@@ -19,6 +19,8 @@ package performance
 import (
 	"time"
 
+	"github.com/samber/lo"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -64,8 +66,8 @@ var _ = Describe("Performance", Label(debug.NoWatch), func() {
 			initialNodes := scaleOutReport.TotalNodes
 
 			// Update deployments to scale down
-			smallDeployment.Spec.Replicas = new(int32(350))
-			largeDeployment.Spec.Replicas = new(int32(350))
+			smallDeployment.Spec.Replicas = lo.ToPtr(int32(350))
+			largeDeployment.Spec.Replicas = lo.ToPtr(int32(350))
 			env.ExpectUpdated(smallDeployment, largeDeployment)
 
 			consolidationReport, err := ReportConsolidationWithOutput(env, "Consolidation Test", 1000, 700, initialNodes, 20*time.Minute, "consolidation")
