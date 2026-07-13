@@ -577,8 +577,8 @@ var _ = Describe("Emptiness", func() {
 						Kind:               "DaemonSet",
 						Name:               ds.Name,
 						UID:                ds.UID,
-						Controller:         new(true),
-						BlockOwnerDeletion: new(true),
+						Controller:         lo.ToPtr(true),
+						BlockOwnerDeletion: lo.ToPtr(true),
 					},
 				},
 			},
@@ -626,8 +626,8 @@ var _ = Describe("Emptiness", func() {
 						Kind:               "ReplicaSet",
 						Name:               rs.Name,
 						UID:                rs.UID,
-						Controller:         new(true),
-						BlockOwnerDeletion: new(true),
+						Controller:         lo.ToPtr(true),
+						BlockOwnerDeletion: lo.ToPtr(true),
 					},
 				},
 			},
@@ -684,8 +684,8 @@ var _ = Describe("Emptiness", func() {
 						Kind:               "StatefulSet",
 						Name:               ss.Name,
 						UID:                ss.UID,
-						Controller:         new(true),
-						BlockOwnerDeletion: new(true),
+						Controller:         lo.ToPtr(true),
+						BlockOwnerDeletion: lo.ToPtr(true),
 					},
 				},
 			},
@@ -756,7 +756,7 @@ var _ = Describe("Emptiness", func() {
 		It("should not consolidate static NodePool nodes", func() {
 			staticNp := test.StaticNodePool(v1.NodePool{
 				Spec: v1.NodePoolSpec{
-					Replicas:   new(int64(2)), // Static nodepool with 2 desired replica
+					Replicas:   lo.ToPtr(int64(2)), // Static nodepool with 2 desired replica
 					Disruption: v1.Disruption{},
 				},
 			})

@@ -19,6 +19,8 @@ package lifecycle_test
 import (
 	"time"
 
+	"github.com/samber/lo"
+
 	"github.com/awslabs/operatorpkg/object"
 	"github.com/awslabs/operatorpkg/status"
 
@@ -278,7 +280,7 @@ var _ = Describe("Liveness", func() {
 						Kind:               object.GVK(nodePool).Kind,
 						Name:               nodePool.Name,
 						UID:                nodePool.UID,
-						BlockOwnerDeletion: new(true),
+						BlockOwnerDeletion: lo.ToPtr(true),
 					},
 				},
 			},
@@ -294,7 +296,7 @@ var _ = Describe("Liveness", func() {
 						Kind:               object.GVK(nodePool).Kind,
 						Name:               nodePool.Name,
 						UID:                nodePool.UID,
-						BlockOwnerDeletion: new(true),
+						BlockOwnerDeletion: lo.ToPtr(true),
 					},
 				},
 			},
@@ -327,7 +329,7 @@ var _ = Describe("Liveness", func() {
 						Kind:               object.GVK(nodePool).Kind,
 						Name:               nodePool.Name,
 						UID:                nodePool.UID,
-						BlockOwnerDeletion: new(true),
+						BlockOwnerDeletion: lo.ToPtr(true),
 					},
 				},
 			},
@@ -343,7 +345,7 @@ var _ = Describe("Liveness", func() {
 						Kind:               object.GVK(nodePool).Kind,
 						Name:               nodePool.Name,
 						UID:                nodePool.UID,
-						BlockOwnerDeletion: new(true),
+						BlockOwnerDeletion: lo.ToPtr(true),
 					},
 				},
 			},
@@ -383,7 +385,7 @@ var _ = Describe("Liveness", func() {
 						Kind:               object.GVK(nodePool).Kind,
 						Name:               nodePool.Name,
 						UID:                nodePool.UID,
-						BlockOwnerDeletion: new(true),
+						BlockOwnerDeletion: lo.ToPtr(true),
 					},
 				},
 			},

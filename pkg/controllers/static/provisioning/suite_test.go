@@ -119,7 +119,7 @@ var _ = Describe("Static Provisioning Controller", func() {
 	Context("Reconcile", func() {
 		It("should handle CreateNodeClaims errors gracefully", func() {
 			nodePool := test.StaticNodePool()
-			nodePool.Spec.Replicas = new(int64(1))
+			nodePool.Spec.Replicas = lo.ToPtr(int64(1))
 			ExpectApplied(ctx, env.Client, nodePool)
 
 			// Create controller with failing client
@@ -137,7 +137,7 @@ var _ = Describe("Static Provisioning Controller", func() {
 		})
 		It("should return early if nodepool is not managed by cloud provider", func() {
 			nodePool := test.StaticNodePool()
-			nodePool.Spec.Replicas = new(int64(1))
+			nodePool.Spec.Replicas = lo.ToPtr(int64(1))
 			nodePool.Spec.Template.Spec.NodeClassRef = &v1.NodeClassReference{
 				Group: "test.group",
 				Kind:  "UnmanagedNodeClass",
@@ -155,7 +155,7 @@ var _ = Describe("Static Provisioning Controller", func() {
 		})
 		It("should return early if nodepool root condition is not true", func() {
 			nodePool := test.StaticNodePool()
-			nodePool.Spec.Replicas = new(int64(1))
+			nodePool.Spec.Replicas = lo.ToPtr(int64(1))
 			nodePool.StatusConditions().SetFalse(v1.ConditionTypeValidationSucceeded, "ValidationFailed", "Validation failed")
 			ExpectApplied(ctx, env.Client, nodePool)
 
@@ -169,7 +169,7 @@ var _ = Describe("Static Provisioning Controller", func() {
 		})
 		It("should return early if nodepool is being deleted", func() {
 			nodePool := test.StaticNodePool()
-			nodePool.Spec.Replicas = new(int64(1))
+			nodePool.Spec.Replicas = lo.ToPtr(int64(1))
 			ExpectApplied(ctx, env.Client, nodePool)
 			ExpectDeletionTimestampSet(ctx, env.Client, nodePool)
 
@@ -196,7 +196,7 @@ var _ = Describe("Static Provisioning Controller", func() {
 		})
 		It("should return early if current node count exceeds desired replicas", func() {
 			nodePool := test.StaticNodePool()
-			nodePool.Spec.Replicas = new(int64(1))
+			nodePool.Spec.Replicas = lo.ToPtr(int64(1))
 			// Create 2 nodes and nodeclaims that belong to this nodepool (exceeds desired replicas of 1)
 			nodeClaim1, node1 := test.NodeClaimAndNode(v1.NodeClaim{
 				ObjectMeta: metav1.ObjectMeta{
@@ -245,7 +245,7 @@ var _ = Describe("Static Provisioning Controller", func() {
 		})
 		It("should create nodeclaims when current node count is less than desired replicas", func() {
 			nodePool := test.StaticNodePool()
-			nodePool.Spec.Replicas = new(int64(2))
+			nodePool.Spec.Replicas = lo.ToPtr(int64(2))
 			ExpectApplied(ctx, env.Client, nodePool)
 
 			result := ExpectObjectReconciled(ctx, env.Client, controller, nodePool)
@@ -265,7 +265,7 @@ var _ = Describe("Static Provisioning Controller", func() {
 		})
 		It("should create additional nodeclaims to reach desired replicas", func() {
 			nodePool := test.StaticNodePool()
-			nodePool.Spec.Replicas = new(int64(3))
+			nodePool.Spec.Replicas = lo.ToPtr(int64(3))
 			// Create 2 nodes and nodeclaims that belong to this nodepool (exceeds desired replicas of 1)
 			nodeClaim1, node1 := test.NodeClaimAndNode(v1.NodeClaim{
 				ObjectMeta: metav1.ObjectMeta{
@@ -300,7 +300,7 @@ var _ = Describe("Static Provisioning Controller", func() {
 		})
 		It("should not create additional nodeclaims", func() {
 			nodePool := test.StaticNodePool()
-			nodePool.Spec.Replicas = new(int64(3))
+			nodePool.Spec.Replicas = lo.ToPtr(int64(3))
 
 			nodeClaimOpts := []v1.NodeClaim{{
 				ObjectMeta: metav1.ObjectMeta{
@@ -351,7 +351,7 @@ var _ = Describe("Static Provisioning Controller", func() {
 		})
 		It("should not create additional nodeclaims when node limits are reached", func() {
 			nodePool := test.StaticNodePool()
-			nodePool.Spec.Replicas = new(int64(3))
+			nodePool.Spec.Replicas = lo.ToPtr(int64(3))
 			nodePool.Spec.Limits = v1.Limits{
 				corev1.ResourceName("nodes"): resource.MustParse("1"),
 			}
@@ -389,7 +389,7 @@ var _ = Describe("Static Provisioning Controller", func() {
 		})
 		It("should reserve nodepool nodecount during provisioning and release after", func() {
 			nodePool := test.StaticNodePool()
-			nodePool.Spec.Replicas = new(int64(3))
+			nodePool.Spec.Replicas = lo.ToPtr(int64(3))
 			nodePool.Spec.Limits = v1.Limits{
 				corev1.ResourceName("nodes"): resource.MustParse("10"),
 			}
@@ -412,7 +412,7 @@ var _ = Describe("Static Provisioning Controller", func() {
 			cluster.NodePoolState.ReleaseNodeCount(nodePool.Name, 7)
 
 			// Size up the replicas to 15 with limit 10
-			nodePool.Spec.Replicas = new(int64(15))
+			nodePool.Spec.Replicas = lo.ToPtr(int64(15))
 			ExpectApplied(ctx, env.Client, nodePool)
 
 			// Update the state with Created NodeClaims
@@ -436,7 +436,7 @@ var _ = Describe("Static Provisioning Controller", func() {
 		})
 		It("should handle zero replicas", func() {
 			nodePool := test.StaticNodePool()
-			nodePool.Spec.Replicas = new(int64(0))
+			nodePool.Spec.Replicas = lo.ToPtr(int64(0))
 			ExpectApplied(ctx, env.Client, nodePool)
 
 			result := ExpectObjectReconciled(ctx, env.Client, controller, nodePool)
@@ -452,8 +452,8 @@ var _ = Describe("Static Provisioning Controller", func() {
 		It("should respect nodepool template specifications", func() {
 			// Input uses GT 2, but output will be canonicalized to GTE 3
 			inputRequirements := []v1.NodeSelectorRequirementWithMinValues{
-				{Key: "karpenter.k8s.aws/instance-category", Operator: corev1.NodeSelectorOpIn, Values: []string{"c", "r"}, MinValues: new(int(2))},
-				{Key: "karpenter.k8s.aws/instance-family", Operator: corev1.NodeSelectorOpIn, Values: []string{"c4", "r4"}, MinValues: new(int(2))},
+				{Key: "karpenter.k8s.aws/instance-category", Operator: corev1.NodeSelectorOpIn, Values: []string{"c", "r"}, MinValues: lo.ToPtr(int(2))},
+				{Key: "karpenter.k8s.aws/instance-family", Operator: corev1.NodeSelectorOpIn, Values: []string{"c4", "r4"}, MinValues: lo.ToPtr(int(2))},
 				{Key: "karpenter.k8s.aws/instance-cpu", Operator: corev1.NodeSelectorOpIn, Values: []string{"32"}},
 				{Key: "karpenter.k8s.aws/instance-hypervisor", Operator: corev1.NodeSelectorOpIn, Values: []string{"nitro"}},
 				{Key: "karpenter.k8s.aws/instance-generation", Operator: corev1.NodeSelectorOpGt, Values: []string{"2"}},
@@ -462,8 +462,8 @@ var _ = Describe("Static Provisioning Controller", func() {
 				{Key: v1.CapacityTypeLabelKey, Operator: corev1.NodeSelectorOpIn, Values: []string{"on-demand", "reserved", "spot"}},
 			}
 			expectedRequirements := []v1.NodeSelectorRequirementWithMinValues{
-				{Key: "karpenter.k8s.aws/instance-category", Operator: corev1.NodeSelectorOpIn, Values: []string{"c", "r"}, MinValues: new(int(2))},
-				{Key: "karpenter.k8s.aws/instance-family", Operator: corev1.NodeSelectorOpIn, Values: []string{"c4", "r4"}, MinValues: new(int(2))},
+				{Key: "karpenter.k8s.aws/instance-category", Operator: corev1.NodeSelectorOpIn, Values: []string{"c", "r"}, MinValues: lo.ToPtr(int(2))},
+				{Key: "karpenter.k8s.aws/instance-family", Operator: corev1.NodeSelectorOpIn, Values: []string{"c4", "r4"}, MinValues: lo.ToPtr(int(2))},
 				{Key: "karpenter.k8s.aws/instance-cpu", Operator: corev1.NodeSelectorOpIn, Values: []string{"32"}},
 				{Key: "karpenter.k8s.aws/instance-hypervisor", Operator: corev1.NodeSelectorOpIn, Values: []string{"nitro"}},
 				{Key: "karpenter.k8s.aws/instance-generation", Operator: v1.NodeSelectorOpGte, Values: []string{"3"}}, // GT 2 canonicalized to GTE 3
@@ -473,7 +473,7 @@ var _ = Describe("Static Provisioning Controller", func() {
 			}
 			nodePool := test.StaticNodePool(v1.NodePool{
 				Spec: v1.NodePoolSpec{
-					Replicas: new(int64(4)),
+					Replicas: lo.ToPtr(int64(4)),
 					Template: v1.NodeClaimTemplate{
 						ObjectMeta: v1.ObjectMeta{
 							Labels: map[string]string{
@@ -508,7 +508,7 @@ var _ = Describe("Static Provisioning Controller", func() {
 		It("should handle large replica counts", func() {
 			nodePool := test.StaticNodePool()
 			numNodeClaims := 1000
-			nodePool.Spec.Replicas = new(int64(numNodeClaims))
+			nodePool.Spec.Replicas = lo.ToPtr(int64(numNodeClaims))
 			ExpectApplied(ctx, env.Client, nodePool)
 
 			Eventually(func(g Gomega) int {
@@ -525,7 +525,7 @@ var _ = Describe("Static Provisioning Controller", func() {
 			nodePool.Spec.Limits = v1.Limits{
 				corev1.ResourceName("nodes"): resource.MustParse("10"),
 			}
-			nodePool.Spec.Replicas = new(int64(5))
+			nodePool.Spec.Replicas = lo.ToPtr(int64(5))
 			ExpectApplied(ctx, env.Client, nodePool)
 
 			// Run many reconciles in parallel
@@ -552,7 +552,7 @@ var _ = Describe("Static Provisioning Controller", func() {
 			nodePool.Spec.Limits = v1.Limits{
 				corev1.ResourceName("nodes"): resource.MustParse("10"),
 			}
-			nodePool.Spec.Replicas = new(int64(5))
+			nodePool.Spec.Replicas = lo.ToPtr(int64(5))
 			ExpectApplied(ctx, env.Client, nodePool)
 
 			// Run many reconciles in parallel
@@ -603,11 +603,11 @@ var _ = Describe("Static Provisioning Controller", func() {
 
 				Expect(static.HasNodePoolReplicaOrStatusChanged(old, new)).To(Equal(expected))
 			},
-			Entry("replica changed", new(int64(5)), new(int64(3)), false, false, true),
-			Entry("replica same, false → true", new(int64(5)), new(int64(5)), false, true, true),
-			Entry("replica same, true → false", new(int64(5)), new(int64(5)), true, false, false),
-			Entry("replica same, both true", new(int64(5)), new(int64(5)), true, true, false),
-			Entry("replica same, both false", new(int64(5)), new(int64(5)), false, false, false),
+			Entry("replica changed", lo.ToPtr(int64(5)), lo.ToPtr(int64(3)), false, false, true),
+			Entry("replica same, false → true", lo.ToPtr(int64(5)), lo.ToPtr(int64(5)), false, true, true),
+			Entry("replica same, true → false", lo.ToPtr(int64(5)), lo.ToPtr(int64(5)), true, false, false),
+			Entry("replica same, both true", lo.ToPtr(int64(5)), lo.ToPtr(int64(5)), true, true, false),
+			Entry("replica same, both false", lo.ToPtr(int64(5)), lo.ToPtr(int64(5)), false, false, false),
 		)
 	})
 })

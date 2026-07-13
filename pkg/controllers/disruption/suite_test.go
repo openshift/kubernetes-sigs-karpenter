@@ -390,7 +390,7 @@ var _ = Describe("Simulate Scheduling", func() {
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "local-path",
 			},
-			Provisioner: new("kubernetes.io/no-provisioner"),
+			Provisioner: lo.ToPtr("kubernetes.io/no-provisioner"),
 		})
 		persistentVolume := test.PersistentVolume(test.PersistentVolumeOptions{UseLocal: true})
 		persistentVolume.Spec.NodeAffinity = &corev1.VolumeNodeAffinity{
@@ -418,8 +418,8 @@ var _ = Describe("Simulate Scheduling", func() {
 						Kind:               "StatefulSet",
 						Name:               ss.Name,
 						UID:                ss.UID,
-						Controller:         new(true),
-						BlockOwnerDeletion: new(true),
+						Controller:         lo.ToPtr(true),
+						BlockOwnerDeletion: lo.ToPtr(true),
 					},
 				},
 			},
@@ -499,8 +499,8 @@ var _ = Describe("Simulate Scheduling", func() {
 						Kind:               "ReplicaSet",
 						Name:               rs.Name,
 						UID:                rs.UID,
-						Controller:         new(true),
-						BlockOwnerDeletion: new(true),
+						Controller:         lo.ToPtr(true),
+						BlockOwnerDeletion: lo.ToPtr(true),
 					},
 				}}})
 
@@ -888,13 +888,13 @@ var _ = Describe("Pod Eviction Cost", func() {
 	})
 	It("should have a higher disruptionCost for a pod with a higher priority", func() {
 		cost := disruptionutils.EvictionCost(ctx, &corev1.Pod{
-			Spec: corev1.PodSpec{Priority: new(int32(1))},
+			Spec: corev1.PodSpec{Priority: lo.ToPtr(int32(1))},
 		})
 		Expect(cost).To(BeNumerically(">", standardPodCost))
 	})
 	It("should have a lower disruptionCost for a pod with a lower priority", func() {
 		cost := disruptionutils.EvictionCost(ctx, &corev1.Pod{
-			Spec: corev1.PodSpec{Priority: new(int32(-1))},
+			Spec: corev1.PodSpec{Priority: lo.ToPtr(int32(-1))},
 		})
 		Expect(cost).To(BeNumerically("<", standardPodCost))
 	})
@@ -970,7 +970,7 @@ var _ = Describe("Candidate Filtering", func() {
 						Kind:       "Node",
 						Name:       node.Name,
 						UID:        node.UID,
-						Controller: new(true),
+						Controller: lo.ToPtr(true),
 					},
 				},
 			},
@@ -1009,7 +1009,7 @@ var _ = Describe("Candidate Filtering", func() {
 						Kind:       "DaemonSet",
 						Name:       daemonSet.Name,
 						UID:        daemonSet.UID,
-						Controller: new(true),
+						Controller: lo.ToPtr(true),
 					},
 				},
 			},
@@ -1413,7 +1413,7 @@ var _ = Describe("Candidate Filtering", func() {
 						Kind:       "DaemonSet",
 						Name:       daemonSet.Name,
 						UID:        daemonSet.UID,
-						Controller: new(true),
+						Controller: lo.ToPtr(true),
 					},
 				},
 			},
@@ -1459,7 +1459,7 @@ var _ = Describe("Candidate Filtering", func() {
 						Kind:       "Node",
 						Name:       node.Name,
 						UID:        node.UID,
-						Controller: new(true),
+						Controller: lo.ToPtr(true),
 					},
 				},
 			},
@@ -2036,8 +2036,8 @@ var _ = Describe("Metrics", func() {
 						Kind:               "ReplicaSet",
 						Name:               rs.Name,
 						UID:                rs.UID,
-						Controller:         new(true),
-						BlockOwnerDeletion: new(true),
+						Controller:         lo.ToPtr(true),
+						BlockOwnerDeletion: lo.ToPtr(true),
 					},
 				},
 			},
@@ -2096,8 +2096,8 @@ var _ = Describe("Metrics", func() {
 						Kind:               "ReplicaSet",
 						Name:               rs.Name,
 						UID:                rs.UID,
-						Controller:         new(true),
-						BlockOwnerDeletion: new(true),
+						Controller:         lo.ToPtr(true),
+						BlockOwnerDeletion: lo.ToPtr(true),
 					},
 				},
 			},
@@ -2157,8 +2157,8 @@ var _ = Describe("Metrics", func() {
 						Kind:               "ReplicaSet",
 						Name:               rs.Name,
 						UID:                rs.UID,
-						Controller:         new(true),
-						BlockOwnerDeletion: new(true),
+						Controller:         lo.ToPtr(true),
+						BlockOwnerDeletion: lo.ToPtr(true),
 					},
 				},
 			},

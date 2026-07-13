@@ -19,6 +19,8 @@ package integration_test
 import (
 	"time"
 
+	"github.com/samber/lo"
+
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -152,7 +154,7 @@ var _ = Describe("NodeClaim", func() {
 					Kind:               "NodeClaim",
 					Name:               nodeClaim.Name,
 					UID:                nodeClaim.UID,
-					BlockOwnerDeletion: new(true),
+					BlockOwnerDeletion: lo.ToPtr(true),
 				},
 			))
 			env.EventuallyExpectCreatedNodeClaimCount("==", 1)

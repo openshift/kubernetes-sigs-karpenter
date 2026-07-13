@@ -19,6 +19,8 @@ package nodeoverlay
 import (
 	"testing"
 
+	"github.com/samber/lo"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
@@ -61,8 +63,8 @@ func BenchmarkStoreApply(b *testing.B) {
 		for _, offering := range it.Offerings {
 			if offering.Requirements.Get(v1.CapacityTypeLabelKey).Has("spot") {
 				priceUpdates[offering.Requirements.String()] = &priceUpdate{
-					OverlayUpdate: new("-10%"),
-					lowestWeight:  new(int32(10)),
+					OverlayUpdate: lo.ToPtr("-10%"),
+					lowestWeight:  lo.ToPtr(int32(10)),
 				}
 			}
 		}
@@ -126,8 +128,8 @@ func BenchmarkStoreApplyPriceOnly(b *testing.B) {
 		priceUpdates := make(map[string]*priceUpdate)
 		for _, offering := range it.Offerings {
 			priceUpdates[offering.Requirements.String()] = &priceUpdate{
-				OverlayUpdate: new("+0.01"),
-				lowestWeight:  new(int32(10)),
+				OverlayUpdate: lo.ToPtr("+0.01"),
+				lowestWeight:  lo.ToPtr(int32(10)),
 			}
 		}
 		store.updates["default"][it.Name] = &instanceTypeUpdate{
@@ -195,8 +197,8 @@ func BenchmarkStoreApplyBothOverlays(b *testing.B) {
 		priceUpdates := make(map[string]*priceUpdate)
 		for _, offering := range it.Offerings {
 			priceUpdates[offering.Requirements.String()] = &priceUpdate{
-				OverlayUpdate: new("+0.01"),
-				lowestWeight:  new(int32(10)),
+				OverlayUpdate: lo.ToPtr("+0.01"),
+				lowestWeight:  lo.ToPtr(int32(10)),
 			}
 		}
 		store.updates["default"][it.Name] = &instanceTypeUpdate{
@@ -249,8 +251,8 @@ func BenchmarkStoreApplyAllScenario(b *testing.B) {
 			priceUpdates := make(map[string]*priceUpdate)
 			for _, offering := range it.Offerings {
 				priceUpdates[offering.Requirements.String()] = &priceUpdate{
-					OverlayUpdate: new("-5%"),
-					lowestWeight:  new(int32(10)),
+					OverlayUpdate: lo.ToPtr("-5%"),
+					lowestWeight:  lo.ToPtr(int32(10)),
 				}
 			}
 			internalStore.updates[np][it.Name] = &instanceTypeUpdate{
@@ -279,7 +281,7 @@ func BenchmarkStoreApplyAllScenario(b *testing.B) {
 func setupNodeOverlayBenchmarkStore(instanceTypes []*cloudprovider.InstanceType, nodePools []string) *internalInstanceTypeStore {
 	overlay := v1alpha1.NodeOverlay{
 		Spec: v1alpha1.NodeOverlaySpec{
-			Weight: new(int32(100)),
+			Weight: lo.ToPtr(int32(100)),
 		},
 	}
 

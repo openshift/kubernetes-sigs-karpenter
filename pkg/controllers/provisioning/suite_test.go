@@ -1028,8 +1028,8 @@ var _ = Describe("Provisioning", func() {
 								Kind:               "DaemonSet",
 								Name:               daemonset.Name,
 								UID:                daemonset.UID,
-								Controller:         new(true),
-								BlockOwnerDeletion: new(true),
+								Controller:         lo.ToPtr(true),
+								BlockOwnerDeletion: lo.ToPtr(true),
 							},
 						},
 					},
@@ -1251,8 +1251,8 @@ var _ = Describe("Provisioning", func() {
 								Kind:               "DaemonSet",
 								Name:               daemonset.Name,
 								UID:                daemonset.UID,
-								Controller:         new(true),
-								BlockOwnerDeletion: new(true),
+								Controller:         lo.ToPtr(true),
+								BlockOwnerDeletion: lo.ToPtr(true),
 							},
 						},
 					},
@@ -1766,7 +1766,7 @@ var _ = Describe("Provisioning", func() {
 					Kind:               "NodePool",
 					Name:               nodePool.Name,
 					UID:                nodePool.UID,
-					BlockOwnerDeletion: new(true),
+					BlockOwnerDeletion: lo.ToPtr(true),
 				},
 			))
 			ExpectScheduled(ctx, env.Client, pod)
@@ -2069,7 +2069,7 @@ var _ = Describe("Provisioning", func() {
 					ObjectMeta: metav1.ObjectMeta{
 						Name: "local-path",
 					},
-					Provisioner: new("kubernetes.io/no-provisioner"),
+					Provisioner: lo.ToPtr("kubernetes.io/no-provisioner"),
 				})
 				// Create a PersistentVolume that is using a random node name for its affinity
 				persistentVolume := test.PersistentVolume(volumeOptions)
@@ -2110,7 +2110,7 @@ var _ = Describe("Provisioning", func() {
 					ObjectMeta: metav1.ObjectMeta{
 						Name: "local-path",
 					},
-					Provisioner: new("kubernetes.io/no-provisioner"),
+					Provisioner: lo.ToPtr("kubernetes.io/no-provisioner"),
 				})
 				pod := test.UnschedulablePod(test.PodOptions{
 					EphemeralVolumeTemplates: []test.EphemeralVolumeTemplateOptions{
@@ -2677,8 +2677,8 @@ var _ = Describe("Provisioning", func() {
 			It("should schedule to the nodepool with the highest priority always", func() {
 				nodePools := []client.Object{
 					test.NodePool(),
-					test.NodePool(v1.NodePool{Spec: v1.NodePoolSpec{Weight: new(int32(20))}}),
-					test.NodePool(v1.NodePool{Spec: v1.NodePoolSpec{Weight: new(int32(100))}}),
+					test.NodePool(v1.NodePool{Spec: v1.NodePoolSpec{Weight: lo.ToPtr(int32(20))}}),
+					test.NodePool(v1.NodePool{Spec: v1.NodePoolSpec{Weight: lo.ToPtr(int32(100))}}),
 				}
 				ExpectApplied(ctx, env.Client, nodePools...)
 				pods := []*corev1.Pod{
@@ -2694,8 +2694,8 @@ var _ = Describe("Provisioning", func() {
 				targetedNodePool := test.NodePool()
 				nodePools := []client.Object{
 					targetedNodePool,
-					test.NodePool(v1.NodePool{Spec: v1.NodePoolSpec{Weight: new(int32(20))}}),
-					test.NodePool(v1.NodePool{Spec: v1.NodePoolSpec{Weight: new(int32(100))}}),
+					test.NodePool(v1.NodePool{Spec: v1.NodePoolSpec{Weight: lo.ToPtr(int32(20))}}),
+					test.NodePool(v1.NodePool{Spec: v1.NodePoolSpec{Weight: lo.ToPtr(int32(100))}}),
 				}
 				ExpectApplied(ctx, env.Client, nodePools...)
 				pod := test.UnschedulablePod(test.PodOptions{NodeSelector: map[string]string{v1.NodePoolLabelKey: targetedNodePool.Name}})
@@ -2710,7 +2710,7 @@ var _ = Describe("Provisioning", func() {
 		It("should not create NodeClaims for StaticNodePool", func() {
 			ExpectApplied(ctx, env.Client, test.StaticNodePool(v1.NodePool{
 				Spec: v1.NodePoolSpec{
-					Replicas: new(int64(2)),
+					Replicas: lo.ToPtr(int64(2)),
 				}},
 			))
 			pod := test.UnschedulablePod()
@@ -2723,7 +2723,7 @@ var _ = Describe("Provisioning", func() {
 			targetedNodePool := test.NodePool()
 			staticNodePool := test.StaticNodePool(v1.NodePool{
 				Spec: v1.NodePoolSpec{
-					Replicas: new(int64(1)),
+					Replicas: lo.ToPtr(int64(1)),
 				}})
 			ExpectApplied(ctx, env.Client, targetedNodePool, staticNodePool)
 
@@ -2747,7 +2747,7 @@ var _ = Describe("Provisioning", func() {
 				// Create a nodepool with instance type minValues requirement
 				defaultNodePool = test.NodePool(v1.NodePool{
 					Spec: v1.NodePoolSpec{
-						Weight: new(int32(100)),
+						Weight: lo.ToPtr(int32(100)),
 						Template: v1.NodeClaimTemplate{
 							Spec: v1.NodeClaimTemplateSpec{
 								Requirements: []v1.NodeSelectorRequirementWithMinValues{
@@ -2756,7 +2756,7 @@ var _ = Describe("Provisioning", func() {
 										Operator: corev1.NodeSelectorOpIn,
 										Values:   []string{"instance-type-1", "instance-type-2", "instance-type-3"},
 
-										MinValues: new(3),
+										MinValues: lo.ToPtr(3),
 									},
 								},
 							},
@@ -2893,7 +2893,7 @@ var _ = Describe("Provisioning", func() {
 							Operator: corev1.NodeSelectorOpIn,
 							Values:   []string{"instance-type-1", "instance-type-2"},
 
-							MinValues: new(2),
+							MinValues: lo.ToPtr(2),
 						}))
 				})
 
@@ -2940,7 +2940,7 @@ var _ = Describe("Provisioning", func() {
 
 					nodePoolWithNoMinValues := test.NodePool(v1.NodePool{
 						Spec: v1.NodePoolSpec{
-							Weight: new(int32(10)),
+							Weight: lo.ToPtr(int32(10)),
 							Template: v1.NodeClaimTemplate{
 								Spec: v1.NodeClaimTemplateSpec{
 									Requirements: []v1.NodeSelectorRequirementWithMinValues{
@@ -2976,7 +2976,7 @@ var _ = Describe("Provisioning", func() {
 							Operator: corev1.NodeSelectorOpIn,
 							Values:   []string{"instance-type-1", "instance-type-2"},
 
-							MinValues: new(2),
+							MinValues: lo.ToPtr(2),
 						}))
 				})
 
@@ -3023,7 +3023,7 @@ var _ = Describe("Provisioning", func() {
 
 					lowerWeightNodePool := test.NodePool(v1.NodePool{
 						Spec: v1.NodePoolSpec{
-							Weight: new(int32(10)),
+							Weight: lo.ToPtr(int32(10)),
 							Template: v1.NodeClaimTemplate{
 								Spec: v1.NodeClaimTemplateSpec{
 									Requirements: []v1.NodeSelectorRequirementWithMinValues{
@@ -3032,7 +3032,7 @@ var _ = Describe("Provisioning", func() {
 											Operator: corev1.NodeSelectorOpIn,
 											Values:   []string{"instance-type-1", "instance-type-2", "instance-type-3"},
 
-											MinValues: new(3),
+											MinValues: lo.ToPtr(3),
 										},
 									},
 								},
@@ -3068,7 +3068,7 @@ var _ = Describe("Provisioning", func() {
 							Operator: corev1.NodeSelectorOpIn,
 							Values:   []string{"instance-type-1", "instance-type-2"},
 
-							MinValues: new(2),
+							MinValues: lo.ToPtr(2),
 						}))
 				})
 			})
@@ -3089,7 +3089,7 @@ var _ = Describe("Provisioning", func() {
 										Operator: corev1.NodeSelectorOpIn,
 										Values:   []string{"test-zone-1", "test-zone-2", "test-zone-3"},
 
-										MinValues: new(3),
+										MinValues: lo.ToPtr(3),
 									},
 								},
 							},
@@ -3201,7 +3201,7 @@ var _ = Describe("Provisioning", func() {
 							Operator: corev1.NodeSelectorOpIn,
 							Values:   []string{"test-zone-1", "test-zone-2", "test-zone-3"},
 
-							MinValues: new(2),
+							MinValues: lo.ToPtr(2),
 						}))
 				})
 			})
@@ -3214,7 +3214,7 @@ var _ = Describe("Provisioning", func() {
 				// Create a nodepool with instance type minValues requirement
 				defaultNodePool = test.NodePool(v1.NodePool{
 					Spec: v1.NodePoolSpec{
-						Weight: new(int32(100)),
+						Weight: lo.ToPtr(int32(100)),
 						Template: v1.NodeClaimTemplate{
 							Spec: v1.NodeClaimTemplateSpec{
 								Requirements: []v1.NodeSelectorRequirementWithMinValues{
@@ -3223,14 +3223,14 @@ var _ = Describe("Provisioning", func() {
 										Operator: corev1.NodeSelectorOpIn,
 										Values:   []string{"instance-type-1", "instance-type-2", "instance-type-3"},
 
-										MinValues: new(3),
+										MinValues: lo.ToPtr(3),
 									},
 									{
 										Key:      corev1.LabelTopologyZone,
 										Operator: corev1.NodeSelectorOpIn,
 										Values:   []string{"test-zone-1", "test-zone-2", "test-zone-3"},
 
-										MinValues: new(3),
+										MinValues: lo.ToPtr(3),
 									},
 								},
 							},
@@ -3291,14 +3291,14 @@ var _ = Describe("Provisioning", func() {
 							Operator: corev1.NodeSelectorOpIn,
 							Values:   []string{"instance-type-1"},
 
-							MinValues: new(1),
+							MinValues: lo.ToPtr(1),
 						},
 						v1.NodeSelectorRequirementWithMinValues{
 							Key:      corev1.LabelTopologyZone,
 							Operator: corev1.NodeSelectorOpIn,
 							Values:   []string{"test-zone-1", "test-zone-2", "test-zone-3"},
 
-							MinValues: new(2),
+							MinValues: lo.ToPtr(2),
 						}))
 
 					ExpectMetricCounterValue(metrics.NodeClaimsCreatedTotal, 1, map[string]string{

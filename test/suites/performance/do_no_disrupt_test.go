@@ -19,6 +19,8 @@ package performance
 import (
 	"time"
 
+	"github.com/samber/lo"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/labels"
@@ -91,8 +93,8 @@ var _ = Describe("Performance", Label(debug.NoWatch), func() {
 			initialNodes := scaleOutReport.TotalNodes
 
 			// Scale down small and large deployments (keep do-not-disrupt unchanged)
-			smallDeployment.Spec.Replicas = new(int32(250))
-			largeDeployment.Spec.Replicas = new(int32(250))
+			smallDeployment.Spec.Replicas = lo.ToPtr(int32(250))
+			largeDeployment.Spec.Replicas = lo.ToPtr(int32(250))
 			env.ExpectUpdated(smallDeployment, largeDeployment)
 
 			By("Monitoring consolidation with disruption protection")
