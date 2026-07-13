@@ -133,7 +133,7 @@ var _ = Describe("NodeClaimUtils", func() {
 			Kind:               lo.Must(apiutil.GVKForObject(nodeClaim, scheme.Scheme)).String(),
 			Name:               nodeClaim.Name,
 			UID:                nodeClaim.UID,
-			BlockOwnerDeletion: new(true),
+			BlockOwnerDeletion: lo.ToPtr(true),
 		}))
 	})
 	Context("List", func() {

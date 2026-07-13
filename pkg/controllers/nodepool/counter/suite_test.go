@@ -20,6 +20,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/samber/lo"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -322,7 +324,7 @@ var _ = Describe("Counter", func() {
 			// Create a second nodepool
 			nodePool2 := test.StaticNodePool(v1.NodePool{
 				Spec: v1.NodePoolSpec{
-					Replicas: new(int64(2)),
+					Replicas: lo.ToPtr(int64(2)),
 				},
 			})
 			ExpectApplied(ctx, env.Client, nodePool2)
@@ -378,7 +380,7 @@ var _ = Describe("Counter", func() {
 			// Create a static nodepool with 3 desired replicas
 			staticNodePool := test.StaticNodePool(v1.NodePool{
 				Spec: v1.NodePoolSpec{
-					Replicas: new(int64(3)),
+					Replicas: lo.ToPtr(int64(3)),
 				},
 			})
 			ExpectApplied(ctx, env.Client, staticNodePool)

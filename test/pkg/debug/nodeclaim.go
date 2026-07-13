@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/samber/lo"
+
 	"k8s.io/apimachinery/pkg/api/errors"
 	controllerruntime "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -75,6 +77,6 @@ func (c *NodeClaimController) Register(_ context.Context, m manager.Manager) err
 				return c.GetInfo(oldNodeClaim) != c.GetInfo(newNodeClaim)
 			},
 		}).
-		WithOptions(controller.Options{MaxConcurrentReconciles: 10, SkipNameValidation: new(true)}).
+		WithOptions(controller.Options{MaxConcurrentReconciles: 10, SkipNameValidation: lo.ToPtr(true)}).
 		Complete(c)
 }

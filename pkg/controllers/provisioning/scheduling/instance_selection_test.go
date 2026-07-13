@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"math/rand"
 
+	"github.com/samber/lo"
+
 	"github.com/mitchellh/hashstructure/v2"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -660,7 +662,7 @@ var _ = Describe("Instance Type Selection", func() {
 					Operator: corev1.NodeSelectorOpIn,
 					Values:   []string{"instance-type-1", "instance-type-2"},
 
-					MinValues: new(2),
+					MinValues: lo.ToPtr(2),
 				},
 			}
 			ExpectApplied(ctx, env.Client, nodePool)
@@ -751,7 +753,7 @@ var _ = Describe("Instance Type Selection", func() {
 					Operator: corev1.NodeSelectorOpGt,
 					Values:   []string{"2"},
 
-					MinValues: new(2),
+					MinValues: lo.ToPtr(2),
 				},
 			}
 			ExpectApplied(ctx, env.Client, nodePool)
@@ -825,7 +827,7 @@ var _ = Describe("Instance Type Selection", func() {
 					Key:      instanceGeneration,
 					Operator: corev1.NodeSelectorOpExists,
 
-					MinValues: new(2),
+					MinValues: lo.ToPtr(2),
 				},
 			}
 			ExpectApplied(ctx, env.Client, nodePool)
@@ -928,7 +930,7 @@ var _ = Describe("Instance Type Selection", func() {
 					Operator: corev1.NodeSelectorOpLt,
 					Values:   []string{"4"},
 
-					MinValues: new(2),
+					MinValues: lo.ToPtr(2),
 				},
 			}
 			ExpectApplied(ctx, env.Client, nodePool)
@@ -1003,7 +1005,7 @@ var _ = Describe("Instance Type Selection", func() {
 					Operator: corev1.NodeSelectorOpLt,
 					Values:   []string{"4"},
 
-					MinValues: new(2),
+					MinValues: lo.ToPtr(2),
 				},
 			}
 			ExpectApplied(ctx, env.Client, nodePool)
@@ -1082,14 +1084,14 @@ var _ = Describe("Instance Type Selection", func() {
 					Operator: corev1.NodeSelectorOpIn,
 					Values:   []string{"instance-type-1", "instance-type-2", "instance-type-3"},
 
-					MinValues: new(1),
+					MinValues: lo.ToPtr(1),
 				},
 				{
 					Key:      corev1.LabelInstanceTypeStable,
 					Operator: corev1.NodeSelectorOpNotIn,
 					Values:   []string{"instance-type-3"},
 
-					MinValues: new(2),
+					MinValues: lo.ToPtr(2),
 				},
 			}
 			ExpectApplied(ctx, env.Client, nodePool)
@@ -1195,14 +1197,14 @@ var _ = Describe("Instance Type Selection", func() {
 					Operator: corev1.NodeSelectorOpGt,
 					Values:   []string{"2"},
 
-					MinValues: new(1),
+					MinValues: lo.ToPtr(1),
 				},
 				{
 					Key:      instanceGeneration,
 					Operator: corev1.NodeSelectorOpLt,
 					Values:   []string{"5"},
 
-					MinValues: new(2),
+					MinValues: lo.ToPtr(2),
 				},
 			}
 			ExpectApplied(ctx, env.Client, nodePool)
@@ -1248,7 +1250,7 @@ var _ = Describe("Instance Type Selection", func() {
 					Key:      corev1.LabelInstanceTypeStable,
 					Operator: corev1.NodeSelectorOpExists,
 
-					MinValues: new(11),
+					MinValues: lo.ToPtr(11),
 				},
 			}
 			ExpectApplied(ctx, env.Client, nodePool)
@@ -1304,7 +1306,7 @@ var _ = Describe("Instance Type Selection", func() {
 					Operator: corev1.NodeSelectorOpIn,
 					Values:   []string{"instance-type-1", "instance-type-2"},
 
-					MinValues: new(2),
+					MinValues: lo.ToPtr(2),
 				},
 			}
 			ExpectApplied(ctx, env.Client, nodePool)
@@ -1370,14 +1372,14 @@ var _ = Describe("Instance Type Selection", func() {
 					Key:      corev1.LabelInstanceTypeStable,
 					Operator: corev1.NodeSelectorOpExists,
 
-					MinValues: new(1),
+					MinValues: lo.ToPtr(1),
 				},
 				{
 					Key:      corev1.LabelInstanceTypeStable,
 					Operator: corev1.NodeSelectorOpIn,
 					Values:   []string{"instance-type-1", "instance-type-2"},
 
-					MinValues: new(2),
+					MinValues: lo.ToPtr(2),
 				},
 			}
 			ExpectApplied(ctx, env.Client, nodePool)
@@ -1448,14 +1450,14 @@ var _ = Describe("Instance Type Selection", func() {
 					Key:      corev1.LabelArchStable,
 					Operator: corev1.NodeSelectorOpExists,
 
-					MinValues: new(2),
+					MinValues: lo.ToPtr(2),
 				},
 				{
 					Key:      corev1.LabelInstanceTypeStable,
 					Operator: corev1.NodeSelectorOpIn,
 					Values:   []string{"instance-type-1", "instance-type-2"},
 
-					MinValues: new(1),
+					MinValues: lo.ToPtr(1),
 				},
 			}
 			ExpectApplied(ctx, env.Client, nodePool)
