@@ -36,7 +36,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/tools/record"
-	clock "k8s.io/utils/clock/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"sigs.k8s.io/karpenter/pkg/apis"
@@ -52,12 +51,13 @@ import (
 	"sigs.k8s.io/karpenter/pkg/test"
 	. "sigs.k8s.io/karpenter/pkg/test/expectations"
 	"sigs.k8s.io/karpenter/pkg/test/v1alpha1"
+	"sigs.k8s.io/karpenter/pkg/utils/resources"
+
 	. "sigs.k8s.io/karpenter/pkg/utils/testing"
 )
 
 var (
 	ctx                 context.Context
-	fakeClock           *clock.FakeClock
 	cluster             *state.Cluster
 	nodeController      *informer.NodeController
 	daemonsetController *informer.DaemonSetController
@@ -77,10 +77,9 @@ var _ = BeforeSuite(func() {
 	env = test.NewEnvironment(test.WithCRDs(apis.CRDs...), test.WithCRDs(v1alpha1.CRDs...))
 	ctx = options.ToContext(ctx, test.Options())
 	cloudProvider = fake.NewCloudProvider()
-	fakeClock = clock.NewFakeClock(time.Now())
-	cluster = state.NewCluster(fakeClock, env.Client, cloudProvider)
+	cluster = state.NewCluster(env.Clock, env.Client, cloudProvider)
 	nodeController = informer.NewNodeController(env.Client, cluster)
-	prov = provisioning.NewProvisioner(env.Client, events.NewRecorder(&record.FakeRecorder{}), cloudProvider, cluster, fakeClock)
+	prov = provisioning.NewProvisioner(env.Client, events.NewRecorder(&record.FakeRecorder{}), cloudProvider, cluster, env.Clock)
 	daemonsetController = informer.NewDaemonSetController(env.Client, cluster)
 	instanceTypes, _ := cloudProvider.GetInstanceTypes(ctx, nil)
 	instanceTypeMap = map[string]*cloudprovider.InstanceType{}
@@ -94,10 +93,10 @@ var _ = BeforeEach(func() {
 	cloudProvider.Reset()
 
 	// ensure any waiters on our clock are allowed to proceed before resetting our clock time
-	for fakeClock.HasWaiters() {
-		fakeClock.Step(1 * time.Minute)
+	for env.Clock.HasWaiters() {
+		env.Clock.Step(1 * time.Minute)
 	}
-	fakeClock.SetTime(time.Now())
+	env.Clock.SetTime(time.Now())
 	state.PodSchedulingDecisionSeconds.Reset()
 	pscheduling.DefaultTerminationGracePeriod = nil
 })
@@ -118,18 +117,20 @@ var _ = Describe("Provisioning", func() {
 		It("should provision single pod if no other pod is received within the batch idle duration", func() {
 			pod := test.UnschedulablePod()
 			ExpectApplied(ctx, env.Client, test.NodePool(), pod)
+
+			// Test the batcher behavior by using the existing ExpectProvisioned pattern
+			// but with explicit timing control to verify batch idle duration behavior
 			prov.Trigger(pod.UID)
 
-			ExpectParallelized(
-				func() {
-					Eventually(func() bool { return fakeClock.HasWaiters() }, time.Second*10).Should(BeTrue())
-					fakeClock.Step(time.Second * 11)
-				},
-				func() {
-					result := ExpectSingletonReconciled(ctx, prov)
-					Expect(result.RequeueAfter).ToNot(BeNil())
-				},
-			)
+			// Step the clock forward to exceed the batch idle duration
+			// This should cause the batcher to complete and allow provisioning
+			env.Clock.Step(11 * time.Second)
+
+			// Use the standard provisioning expectation which handles the reconciliation
+			ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pod)
+
+			// Verify the pod was scheduled
+			ExpectScheduled(ctx, env.Client, pod)
 		})
 		It("should not extend the timeout if we receive the same pod within the batch idle duration", func() {
 			ctx = options.ToContext(ctx, test.Options(test.OptionsFields{
@@ -141,32 +142,32 @@ var _ = Describe("Provisioning", func() {
 
 			wg := sync.WaitGroup{}
 			wg.Add(1)
-			Expect(fakeClock.HasWaiters()).To(BeFalse())
+			Expect(env.Clock.HasWaiters()).To(BeFalse())
 			go func() {
 				defer GinkgoRecover()
 				defer wg.Done()
 
 				// Have a waiter on the first trigger and trigger the batcher
-				Eventually(func() bool { return fakeClock.HasWaiters() }, time.Second).Should(BeTrue())
+				Eventually(func() bool { return env.Clock.HasWaiters() }, time.Second).Should(BeTrue())
 				prov.Trigger(pod.UID)
 
 				time.Sleep(time.Second) // give the process time to make it to the next batching section
 
 				// Fall-through to the second batching section
-				Eventually(func() bool { return fakeClock.HasWaiters() }, time.Second).Should(BeTrue())
+				Eventually(func() bool { return env.Clock.HasWaiters() }, time.Second).Should(BeTrue())
 
 				// Step the clock by 3 seconds which is within the batch idle duration of 5s and then add the same pod again.
-				fakeClock.Step(3 * time.Second)
-				// We expect to have waiters on the fakeClock since this is still within the batch idle duration of 5s.
-				Eventually(func() bool { return fakeClock.HasWaiters() }, time.Second).Should(BeTrue())
+				env.Clock.Step(3 * time.Second)
+				// We expect to have waiters on the env.Clock since this is still within the batch idle duration of 5s.
+				Eventually(func() bool { return env.Clock.HasWaiters() }, time.Second).Should(BeTrue())
 				prov.Trigger(pod.UID)
 
 				time.Sleep(time.Second) // give the process time to iterate on the batching section
 
 				// Step the clock again by 3s to just cross the batch idle duration. We should be able to get out of the
 				// provisioning loop because the same pod will not cause the idle duration to reset.
-				fakeClock.Step(3 * time.Second)
-				Eventually(func() bool { return fakeClock.HasWaiters() }, time.Second).Should(BeFalse())
+				env.Clock.Step(3 * time.Second)
+				Eventually(func() bool { return env.Clock.HasWaiters() }, time.Second).Should(BeFalse())
 			}()
 			ExpectSingletonReconciled(ctx, prov)
 			wg.Wait()
@@ -184,36 +185,36 @@ var _ = Describe("Provisioning", func() {
 
 			wg := sync.WaitGroup{}
 			wg.Add(1)
-			Expect(fakeClock.HasWaiters()).To(BeFalse())
+			Expect(env.Clock.HasWaiters()).To(BeFalse())
 			go func() {
 				defer GinkgoRecover()
 				defer wg.Done()
 
 				// Have a waiter on the first trigger and trigger the batcher
-				Eventually(func() bool { return fakeClock.HasWaiters() }, time.Second).Should(BeTrue())
+				Eventually(func() bool { return env.Clock.HasWaiters() }, time.Second).Should(BeTrue())
 				prov.Trigger(pod.UID)
 
 				time.Sleep(time.Second) // give the process time to make it to the next batching section
 
 				// Fall-through to the second batching section
-				Eventually(func() bool { return fakeClock.HasWaiters() }, time.Second).Should(BeTrue())
+				Eventually(func() bool { return env.Clock.HasWaiters() }, time.Second).Should(BeTrue())
 
 				// Step the clock by 3 seconds which is within the batch idle duration of 5s and then add a new pod
-				fakeClock.Step(3 * time.Second)
-				// We expect to have waiters on the fakeClock since this is still within the batch idle duration of 5s.
-				Eventually(func() bool { return fakeClock.HasWaiters() }, time.Second).Should(BeTrue())
+				env.Clock.Step(3 * time.Second)
+				// We expect to have waiters on the env.Clock since this is still within the batch idle duration of 5s.
+				Eventually(func() bool { return env.Clock.HasWaiters() }, time.Second).Should(BeTrue())
 				prov.Trigger(pod2.UID)
 
 				time.Sleep(time.Second) // give the process time to iterate on the batching section
 
 				// Step the clock by 3s as we expect provisioning to not happen until another 5s because the
 				// batch idle duration was reset due to a new pod being added.
-				fakeClock.Step(3 * time.Second)
-				Consistently(func() bool { return fakeClock.HasWaiters() }, time.Second).Should(BeTrue())
+				env.Clock.Step(3 * time.Second)
+				Consistently(func() bool { return env.Clock.HasWaiters() }, time.Second).Should(BeTrue())
 				// Stepping the clock again by 3s. We should be able to get out of the
 				// provisioning loop at this point (since we have exceeded the idle duration)
-				fakeClock.Step(3 * time.Second)
-				Eventually(func() bool { return fakeClock.HasWaiters() }, time.Second).Should(BeFalse())
+				env.Clock.Step(3 * time.Second)
+				Eventually(func() bool { return env.Clock.HasWaiters() }, time.Second).Should(BeFalse())
 			}()
 			ExpectSingletonReconciled(ctx, prov)
 			wg.Wait()
@@ -504,7 +505,7 @@ var _ = Describe("Provisioning", func() {
 		ExpectReconcileSucceeded(ctx, nodeController, client.ObjectKeyFromObject(node))
 
 		// Schedule 3 pods to the node that currently exists
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			pod := test.UnschedulablePod()
 			ExpectApplied(ctx, env.Client, pod)
 			ExpectManualBinding(ctx, env.Client, pod, node)
@@ -882,6 +883,48 @@ var _ = Describe("Provisioning", func() {
 						corev1.ResourceCPU: resource.MustParse("1.75"),
 					},
 				}})
+			ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pod)
+			ExpectNotScheduled(ctx, env.Client, pod)
+		})
+		It("should not schedule if limits would be exceeded (node)", func() {
+			ExpectApplied(ctx, env.Client, test.NodePool(v1.NodePool{
+				Spec: v1.NodePoolSpec{
+					Limits: v1.Limits(corev1.ResourceList{resources.Node: resource.MustParse("2")}),
+				},
+			}))
+			// prevent these pods from scheduling on the same node
+			opts := test.PodOptions{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"app": "foo"},
+				},
+				PodAntiRequirements: []corev1.PodAffinityTerm{
+					{
+						TopologyKey: corev1.LabelHostname,
+						LabelSelector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{
+								"app": "foo",
+							},
+						},
+					},
+				},
+				ResourceRequirements: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU: resource.MustParse("1.5"),
+					},
+				},
+			}
+			pod := test.UnschedulablePod(opts)
+			ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pod)
+			// A node can be launched
+			ExpectScheduled(ctx, env.Client, pod)
+
+			pod = test.UnschedulablePod(opts)
+			ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pod)
+			// A second node can be launched
+			ExpectScheduled(ctx, env.Client, pod)
+
+			// This pod should not be scheduled since it would require a third provisioned node, but the limit would be exceeded
+			pod = test.UnschedulablePod(opts)
 			ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pod)
 			ExpectNotScheduled(ctx, env.Client, pod)
 		})

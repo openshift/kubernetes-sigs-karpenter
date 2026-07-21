@@ -728,7 +728,7 @@ func TestRequirementsProfile(t *testing.T) {
 	reqsA := NewRequirements(NewRequirement("foo", corev1.NodeSelectorOpIn, "a", "b", "c"))
 	reqsB := NewRequirements(NewRequirement("foo", corev1.NodeSelectorOpIn, "d", "e", "f"))
 
-	for i := 0; i < 525000; i++ {
+	for range 525000 {
 		_ = reqsA.Intersects(reqsB)
 		_ = reqsA.Compatible(reqsB)
 		_ = reqsA.NodeSelectorRequirements()

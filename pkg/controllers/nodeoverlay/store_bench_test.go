@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/samber/lo"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
@@ -82,7 +83,7 @@ func BenchmarkStoreApply(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			for _, it := range instanceTypes {
-				_, _ = store.apply("default", it)
+				_ = store.apply("default", it)
 			}
 		}
 	})
@@ -91,7 +92,7 @@ func BenchmarkStoreApply(b *testing.B) {
 // BenchmarkStoreApplyNoOverlay benchmarks applying with no overlays (everything shared)
 func BenchmarkStoreApplyNoOverlay(b *testing.B) {
 	instanceTypes := make([]*cloudprovider.InstanceType, 0, 200)
-	for i := 0; i < 200; i++ {
+	for range 200 {
 		instanceTypes = append(instanceTypes, fake.NewInstanceType(fake.InstanceTypeOptions{
 			Name: "m5.large",
 		}))
@@ -105,7 +106,7 @@ func BenchmarkStoreApplyNoOverlay(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		for _, it := range instanceTypes {
-			_, _ = store.apply("default", it)
+			_ = store.apply("default", it)
 		}
 	}
 }
@@ -113,7 +114,7 @@ func BenchmarkStoreApplyNoOverlay(b *testing.B) {
 // BenchmarkStoreApplyPriceOnly benchmarks applying with only price overlays
 func BenchmarkStoreApplyPriceOnly(b *testing.B) {
 	instanceTypes := make([]*cloudprovider.InstanceType, 0, 200)
-	for i := 0; i < 200; i++ {
+	for range 200 {
 		instanceTypes = append(instanceTypes, fake.NewInstanceType(fake.InstanceTypeOptions{
 			Name: "m5.large",
 		}))
@@ -141,7 +142,7 @@ func BenchmarkStoreApplyPriceOnly(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		for _, it := range instanceTypes {
-			_, _ = store.apply("default", it)
+			_ = store.apply("default", it)
 		}
 	}
 }
@@ -149,7 +150,7 @@ func BenchmarkStoreApplyPriceOnly(b *testing.B) {
 // BenchmarkStoreApplyCapacityOnly benchmarks applying with only capacity overlays
 func BenchmarkStoreApplyCapacityOnly(b *testing.B) {
 	instanceTypes := make([]*cloudprovider.InstanceType, 0, 200)
-	for i := 0; i < 200; i++ {
+	for range 200 {
 		instanceTypes = append(instanceTypes, fake.NewInstanceType(fake.InstanceTypeOptions{
 			Name: "m5.large",
 		}))
@@ -161,7 +162,7 @@ func BenchmarkStoreApplyCapacityOnly(b *testing.B) {
 
 	for _, it := range instanceTypes {
 		store.updates["default"][it.Name] = &instanceTypeUpdate{
-			Price: nil,
+			Price: map[string]*priceUpdate{},
 			Capacity: &capacityUpdate{
 				OverlayUpdate: corev1.ResourceList{
 					"hugepages-2Mi": resource.MustParse("100Mi"),
@@ -174,7 +175,7 @@ func BenchmarkStoreApplyCapacityOnly(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		for _, it := range instanceTypes {
-			_, _ = store.apply("default", it)
+			_ = store.apply("default", it)
 		}
 	}
 }
@@ -182,7 +183,7 @@ func BenchmarkStoreApplyCapacityOnly(b *testing.B) {
 // BenchmarkStoreApplyBothOverlays benchmarks applying with both price and capacity overlays
 func BenchmarkStoreApplyBothOverlays(b *testing.B) {
 	instanceTypes := make([]*cloudprovider.InstanceType, 0, 200)
-	for i := 0; i < 200; i++ {
+	for range 200 {
 		instanceTypes = append(instanceTypes, fake.NewInstanceType(fake.InstanceTypeOptions{
 			Name: "m5.large",
 		}))
@@ -214,7 +215,7 @@ func BenchmarkStoreApplyBothOverlays(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		for _, it := range instanceTypes {
-			_, _ = store.apply("default", it)
+			_ = store.apply("default", it)
 		}
 	}
 }
@@ -228,7 +229,7 @@ func BenchmarkStoreApplyAllScenario(b *testing.B) {
 
 	for _, family := range families {
 		for _, size := range sizes {
-			for i := 0; i < 5; i++ { // Create multiple instances to reach ~200
+			for range 5 { // Create multiple instances to reach ~200
 				name := family + "." + size
 				instanceTypes = append(instanceTypes, fake.NewInstanceType(fake.InstanceTypeOptions{
 					Name: name,
@@ -321,7 +322,7 @@ func BenchmarkNodeOverlayControllerScenario(b *testing.B) {
 
 	for _, family := range families {
 		for _, size := range sizes {
-			for i := 0; i < 4; i++ { // ~216 instance types total
+			for range 4 { // ~216 instance types total
 				name := family + "." + size
 				instanceTypes = append(instanceTypes, fake.NewInstanceType(fake.InstanceTypeOptions{
 					Name: name,
@@ -338,7 +339,7 @@ func BenchmarkNodeOverlayControllerScenario(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		for _, np := range nodePools {
 			for _, it := range instanceTypes {
-				_, _ = store.apply(np, it)
+				_ = store.apply(np, it)
 			}
 		}
 	}

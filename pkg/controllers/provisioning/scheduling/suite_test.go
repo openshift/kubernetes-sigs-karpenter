@@ -43,7 +43,6 @@ import (
 	"k8s.io/client-go/tools/record"
 	cloudproviderapi "k8s.io/cloud-provider/api"
 	"k8s.io/csi-translation-lib/plugins"
-	clock "k8s.io/utils/clock/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeClient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -59,6 +58,7 @@ import (
 	"sigs.k8s.io/karpenter/pkg/operator/injection"
 	"sigs.k8s.io/karpenter/pkg/operator/options"
 	pscheduling "sigs.k8s.io/karpenter/pkg/scheduling"
+	"sigs.k8s.io/karpenter/pkg/state/cost"
 	"sigs.k8s.io/karpenter/pkg/test"
 	. "sigs.k8s.io/karpenter/pkg/test/expectations"
 	"sigs.k8s.io/karpenter/pkg/test/v1alpha1"
@@ -68,7 +68,7 @@ import (
 var ctx context.Context
 var prov *provisioning.Provisioner
 var env *test.Environment
-var fakeClock *clock.FakeClock
+var clusterCost *cost.ClusterCost
 var cluster *state.Cluster
 var cloudProvider *fake.CloudProvider
 var nodeStateController *informer.NodeController
@@ -94,12 +94,12 @@ var _ = BeforeSuite(func() {
 	instanceTypes, _ := cloudProvider.GetInstanceTypes(ctx, nil)
 	// set these on the cloud provider, so we can manipulate them if needed
 	cloudProvider.InstanceTypes = instanceTypes
-	fakeClock = clock.NewFakeClock(time.Now())
-	cluster = state.NewCluster(fakeClock, env.Client, cloudProvider)
+	clusterCost = cost.NewClusterCost(ctx, cloudProvider, env.Client)
+	cluster = state.NewCluster(env.Clock, env.Client, cloudProvider)
 	nodeStateController = informer.NewNodeController(env.Client, cluster)
-	nodeClaimStateController = informer.NewNodeClaimController(env.Client, cloudProvider, cluster)
+	nodeClaimStateController = informer.NewNodeClaimController(env.Client, cloudProvider, cluster, clusterCost)
 	podStateController = informer.NewPodController(env.Client, cluster)
-	prov = provisioning.NewProvisioner(env.Client, events.NewRecorder(&record.FakeRecorder{}), cloudProvider, cluster, fakeClock)
+	prov = provisioning.NewProvisioner(env.Client, events.NewRecorder(&record.FakeRecorder{}), cloudProvider, cluster, env.Clock)
 	podController = provisioning.NewPodController(env.Client, prov, cluster)
 })
 
@@ -115,6 +115,7 @@ var _ = BeforeEach(func() {
 	scheduling.MaxInstanceTypes = 60
 	state.PodSchedulingDecisionSeconds.Reset()
 	scheduling.UnsupportedProvisioners = sets.New[string]()
+	scheduling.UnsupportedTopologyKeys = sets.New[string]()
 })
 
 var _ = AfterEach(func() {
@@ -123,6 +124,7 @@ var _ = AfterEach(func() {
 	scheduling.QueueDepth.Reset()
 	scheduling.DurationSeconds.Reset()
 	scheduling.UnschedulablePodsCount.Reset()
+	scheduling.PendingPodsByEffectiveZone.Reset()
 })
 
 var _ = Context("Scheduling", func() {
@@ -2049,7 +2051,7 @@ var _ = Context("Scheduling", func() {
 						return []string{o.(*corev1.Pod).Spec.NodeName}
 					},
 				).Build()
-				provisioner := provisioning.NewProvisioner(kubeClient, events.NewRecorder(&record.FakeRecorder{}), cloudProvider, cluster, fakeClock)
+				provisioner := provisioning.NewProvisioner(kubeClient, events.NewRecorder(&record.FakeRecorder{}), cloudProvider, cluster, env.Clock)
 				controller := informer.NewNodeController(kubeClient, cluster)
 				// We try to provision a node for an initial unschedulable pod that will create nodeClaim and node bindings
 				ExpectApplied(ctx, kubeClient, nodePool)
@@ -2388,7 +2390,7 @@ var _ = Context("Scheduling", func() {
 			ExpectApplied(ctx, env.Client, nodePool)
 
 			// scheduling in multiple batches random sets of pods
-			for i := 0; i < 10; i++ {
+			for range 10 {
 				initialPods := test.UnschedulablePods(opts, rand.Intn(10))
 				ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, initialPods...)
 				for _, pod := range initialPods {
@@ -2437,7 +2439,7 @@ var _ = Context("Scheduling", func() {
 			var node *corev1.Node
 			//nolint:gosec
 			elem := rand.Intn(100) // The nodeclaim/node that will be marked as initialized
-			for i := 0; i < 100; i++ {
+			for i := range 100 {
 				nc := test.NodeClaim(v1.NodeClaim{
 					ObjectMeta: metav1.ObjectMeta{
 						Labels: map[string]string{
@@ -2458,8 +2460,8 @@ var _ = Context("Scheduling", func() {
 			}
 
 			// Make one of the nodes and nodeClaims initialized
-			ExpectMakeNodeClaimsInitialized(ctx, env.Client, nodeClaims[elem])
-			ExpectMakeNodesInitialized(ctx, env.Client, node)
+			ExpectMakeNodeClaimsInitialized(ctx, env.Client, env.Clock, nodeClaims[elem])
+			ExpectMakeNodesInitialized(ctx, env.Client, env.Clock, node)
 			ExpectReconcileSucceeded(ctx, nodeClaimStateController, client.ObjectKeyFromObject(nodeClaims[elem]))
 			ExpectReconcileSucceeded(ctx, nodeStateController, client.ObjectKeyFromObject(node))
 
@@ -2469,6 +2471,17 @@ var _ = Context("Scheduling", func() {
 
 			// Expect that the scheduled node is equal to node3 since it's initialized
 			Expect(scheduledNode.Name).To(Equal(node.Name))
+		})
+		It("should schedule pods with the same host port to different nodes", func() {
+			ExpectApplied(ctx, env.Client, nodePool)
+			pods := []*corev1.Pod{
+				test.UnschedulablePod(test.PodOptions{HostPorts: []int32{8080}}),
+				test.UnschedulablePod(test.PodOptions{HostPorts: []int32{8080}}),
+			}
+			ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pods...)
+			node1 := ExpectScheduled(ctx, env.Client, pods[0])
+			node2 := ExpectScheduled(ctx, env.Client, pods[1])
+			Expect(node1.Name).ToNot(Equal(node2.Name))
 		})
 	})
 
@@ -2482,7 +2495,7 @@ var _ = Context("Scheduling", func() {
 				},
 			})
 			ExpectApplied(ctx, env.Client, node)
-			ExpectMakeNodesInitialized(ctx, env.Client, node)
+			ExpectMakeNodesInitialized(ctx, env.Client, env.Clock, node)
 			ExpectReconcileSucceeded(ctx, nodeStateController, client.ObjectKeyFromObject(node))
 
 			opts := test.PodOptions{ResourceRequirements: corev1.ResourceRequirements{
@@ -2508,7 +2521,7 @@ var _ = Context("Scheduling", func() {
 				},
 			})
 			ExpectApplied(ctx, env.Client, node)
-			ExpectMakeNodesInitialized(ctx, env.Client, node)
+			ExpectMakeNodesInitialized(ctx, env.Client, env.Clock, node)
 			ExpectReconcileSucceeded(ctx, nodeStateController, client.ObjectKeyFromObject(node))
 
 			opts := test.PodOptions{ResourceRequirements: corev1.ResourceRequirements{
@@ -2533,7 +2546,7 @@ var _ = Context("Scheduling", func() {
 
 			var nodeClaims []*v1.NodeClaim
 			var nodes []*corev1.Node
-			for i := 0; i < 100; i++ {
+			for range 100 {
 				nc := test.NodeClaim(v1.NodeClaim{
 					ObjectMeta: metav1.ObjectMeta{
 						Labels: map[string]string{
@@ -2549,8 +2562,8 @@ var _ = Context("Scheduling", func() {
 
 			// Make one of the nodes and nodeClaims initialized
 			elem := rand.Intn(100) //nolint:gosec
-			ExpectMakeNodeClaimsInitialized(ctx, env.Client, nodeClaims[elem])
-			ExpectMakeNodesInitialized(ctx, env.Client, nodes[elem])
+			ExpectMakeNodeClaimsInitialized(ctx, env.Client, env.Clock, nodeClaims[elem])
+			ExpectMakeNodesInitialized(ctx, env.Client, env.Clock, nodes[elem])
 			ExpectReconcileSucceeded(ctx, nodeClaimStateController, client.ObjectKeyFromObject(nodeClaims[elem]))
 			ExpectReconcileSucceeded(ctx, nodeStateController, client.ObjectKeyFromObject(nodes[elem]))
 
@@ -2572,8 +2585,8 @@ var _ = Context("Scheduling", func() {
 				},
 			})
 			ExpectApplied(ctx, env.Client, nodeClaim, node)
-			ExpectMakeNodeClaimsInitialized(ctx, env.Client, nodeClaim)
-			ExpectMakeNodesInitialized(ctx, env.Client, node)
+			ExpectMakeNodeClaimsInitialized(ctx, env.Client, env.Clock, nodeClaim)
+			ExpectMakeNodesInitialized(ctx, env.Client, env.Clock, node)
 
 			ExpectReconcileSucceeded(ctx, nodeClaimStateController, client.ObjectKeyFromObject(nodeClaim))
 			ExpectReconcileSucceeded(ctx, nodeStateController, client.ObjectKeyFromObject(node))
@@ -2622,8 +2635,8 @@ var _ = Context("Scheduling", func() {
 					}},
 				)
 				ExpectApplied(ctx, env.Client, nodePool, nodeClaim, node, ds)
-				ExpectMakeNodeClaimsInitialized(ctx, env.Client, nodeClaim)
-				ExpectMakeNodesInitialized(ctx, env.Client, node)
+				ExpectMakeNodeClaimsInitialized(ctx, env.Client, env.Clock, nodeClaim)
+				ExpectMakeNodesInitialized(ctx, env.Client, env.Clock, node)
 
 				ExpectReconcileSucceeded(ctx, nodeClaimStateController, client.ObjectKeyFromObject(nodeClaim))
 				ExpectReconcileSucceeded(ctx, nodeStateController, client.ObjectKeyFromObject(node))
@@ -2803,7 +2816,7 @@ var _ = Context("Scheduling", func() {
 			ExpectApplied(ctx, env.Client, sc)
 
 			var pods []*corev1.Pod
-			for i := 0; i < 6; i++ {
+			for i := range 6 {
 				pvcA := test.PersistentVolumeClaim(test.PersistentVolumeClaimOptions{
 					StorageClassName: lo.ToPtr("my-storage-class"),
 					ObjectMeta:       metav1.ObjectMeta{Name: fmt.Sprintf("my-claim-a-%d", i)},
@@ -2865,7 +2878,7 @@ var _ = Context("Scheduling", func() {
 			ExpectApplied(ctx, env.Client, pv, pvc)
 
 			var pods []*corev1.Pod
-			for i := 0; i < 100; i++ {
+			for range 100 {
 				pods = append(pods, test.UnschedulablePod(test.PodOptions{
 					PersistentVolumeClaims: []string{pvc.Name},
 				}))
@@ -2902,7 +2915,7 @@ var _ = Context("Scheduling", func() {
 			ExpectApplied(ctx, env.Client, pv, pvc)
 
 			var pods []*corev1.Pod
-			for i := 0; i < 5; i++ {
+			for range 5 {
 				pods = append(pods, test.UnschedulablePod(test.PodOptions{
 					PersistentVolumeClaims: []string{pvc.Name, pvc.Name},
 				}))
@@ -2914,6 +2927,163 @@ var _ = Context("Scheduling", func() {
 			Expect(env.Client.List(ctx, &nodeList)).To(Succeed())
 			// 5 of the same PVC should all be schedulable on the same node
 			Expect(nodeList.Items).To(HaveLen(1))
+		})
+		It("should schedule pods using a PV with multiple zones", func() {
+			// Use multiple node selector terms so the PV zones are ORed.
+			nodeSelectorTerms := []corev1.NodeSelectorTerm{
+				{MatchExpressions: []corev1.NodeSelectorRequirement{{Key: corev1.LabelTopologyZone, Operator: corev1.NodeSelectorOpIn, Values: []string{"test-zone-1"}}}},
+				{MatchExpressions: []corev1.NodeSelectorRequirement{{Key: corev1.LabelTopologyZone, Operator: corev1.NodeSelectorOpIn, Values: []string{"test-zone-2"}}}},
+			}
+
+			// Create two pods using separate PVCs with anti-affinity to force them into different zones
+			var pods []*corev1.Pod
+			for i := range 2 {
+				pv := test.PersistentVolume(test.PersistentVolumeOptions{
+					ObjectMeta:        metav1.ObjectMeta{Name: fmt.Sprintf("multi-zone-pv-%d", i)},
+					NodeSelectorTerms: nodeSelectorTerms,
+				})
+				pvc := test.PersistentVolumeClaim(test.PersistentVolumeClaimOptions{
+					ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("multi-zone-pvc-%d", i)},
+					VolumeName: pv.Name,
+				})
+				ExpectApplied(ctx, env.Client, pv, pvc)
+
+				pods = append(pods, test.UnschedulablePod(test.PodOptions{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:   fmt.Sprintf("pod-%d", i),
+						Labels: map[string]string{"app": "multi-zone-app"},
+					},
+					PersistentVolumeClaims: []string{pvc.Name},
+					PodAntiRequirements: []corev1.PodAffinityTerm{{
+						LabelSelector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{"app": "multi-zone-app"},
+						},
+						TopologyKey: corev1.LabelTopologyZone,
+					}},
+				}))
+			}
+
+			ExpectApplied(ctx, env.Client, nodePool)
+			ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pods...)
+
+			// Verify that nodes are created in different zones
+			node0 := ExpectScheduled(ctx, env.Client, pods[0])
+			node1 := ExpectScheduled(ctx, env.Client, pods[1])
+
+			Expect(node0.Labels[corev1.LabelTopologyZone]).To(BeElementOf("test-zone-1", "test-zone-2"))
+			Expect(node1.Labels[corev1.LabelTopologyZone]).To(BeElementOf("test-zone-1", "test-zone-2"))
+			Expect(node0.Labels[corev1.LabelTopologyZone]).ToNot(Equal(node1.Labels[corev1.LabelTopologyZone]))
+		})
+		DescribeTable("should preserve unconstrained PV alternatives after ignoring hostname affinity",
+			func(volumeOptions test.PersistentVolumeOptions) {
+				volumeOptions.ObjectMeta = metav1.ObjectMeta{Name: "hostname-or-zone-pv"}
+				volumeOptions.NodeSelectorTerms = []corev1.NodeSelectorTerm{
+					{MatchExpressions: []corev1.NodeSelectorRequirement{{Key: corev1.LabelHostname, Operator: corev1.NodeSelectorOpIn, Values: []string{"existing-host"}}}},
+					{MatchExpressions: []corev1.NodeSelectorRequirement{{Key: corev1.LabelTopologyZone, Operator: corev1.NodeSelectorOpIn, Values: []string{"invalid-zone"}}}},
+				}
+				pv := test.PersistentVolume(volumeOptions)
+				pvc := test.PersistentVolumeClaim(test.PersistentVolumeClaimOptions{
+					ObjectMeta: metav1.ObjectMeta{Name: "hostname-or-zone-pvc"},
+					VolumeName: pv.Name,
+				})
+				pod := test.UnschedulablePod(test.PodOptions{
+					ObjectMeta:             metav1.ObjectMeta{Name: "hostname-or-zone-pod"},
+					PersistentVolumeClaims: []string{pvc.Name},
+				})
+
+				ExpectApplied(ctx, env.Client, nodePool, pv, pvc, pod)
+				ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pod)
+
+				ExpectScheduled(ctx, env.Client, pod)
+			},
+			Entry("for local volumes", test.PersistentVolumeOptions{UseLocal: true}),
+			Entry("for hostpath volumes", test.PersistentVolumeOptions{UseHostPath: true}),
+		)
+		It("should schedule pods using a StorageClass with multiple zones in AllowedTopologies", func() {
+			// Create a StorageClass with multiple allowed topology terms so the zones are ORed.
+			sc := test.StorageClass(test.StorageClassOptions{
+				ObjectMeta:        metav1.ObjectMeta{Name: "multi-zone-sc"},
+				VolumeBindingMode: lo.ToPtr(storagev1.VolumeBindingWaitForFirstConsumer),
+				AllowedTopologies: []corev1.TopologySelectorTerm{
+					{MatchLabelExpressions: []corev1.TopologySelectorLabelRequirement{{Key: corev1.LabelTopologyZone, Values: []string{"test-zone-1"}}}},
+					{MatchLabelExpressions: []corev1.TopologySelectorLabelRequirement{{Key: corev1.LabelTopologyZone, Values: []string{"test-zone-2"}}}},
+				},
+			})
+			ExpectApplied(ctx, env.Client, sc)
+
+			// Create two pods with PVCs and anti-affinity to force them into different zones
+			var pods []*corev1.Pod
+			for i := range 2 {
+				pvc := test.PersistentVolumeClaim(test.PersistentVolumeClaimOptions{
+					ObjectMeta:       metav1.ObjectMeta{Name: fmt.Sprintf("multi-zone-pvc-%d", i)},
+					StorageClassName: lo.ToPtr(sc.Name),
+				})
+				ExpectApplied(ctx, env.Client, pvc)
+
+				pods = append(pods, test.UnschedulablePod(test.PodOptions{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:   fmt.Sprintf("sc-pod-%d", i),
+						Labels: map[string]string{"app": "multi-zone-sc-app"},
+					},
+					PersistentVolumeClaims: []string{pvc.Name},
+					PodAntiRequirements: []corev1.PodAffinityTerm{{
+						LabelSelector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{"app": "multi-zone-sc-app"},
+						},
+						TopologyKey: corev1.LabelTopologyZone,
+					}},
+				}))
+			}
+
+			ExpectApplied(ctx, env.Client, nodePool)
+			ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pods...)
+
+			// Verify that nodes are created in different zones from the StorageClass AllowedTopologies
+			node0 := ExpectScheduled(ctx, env.Client, pods[0])
+			node1 := ExpectScheduled(ctx, env.Client, pods[1])
+
+			Expect(node0.Labels[corev1.LabelTopologyZone]).To(BeElementOf("test-zone-1", "test-zone-2"))
+			Expect(node1.Labels[corev1.LabelTopologyZone]).To(BeElementOf("test-zone-1", "test-zone-2"))
+			Expect(node0.Labels[corev1.LabelTopologyZone]).ToNot(Equal(node1.Labels[corev1.LabelTopologyZone]))
+		})
+		It("should schedule pods when a valid multi-volume topology alternative remains after pruning disjoint branches", func() {
+			cloudProvider.InstanceTypes = fake.InstanceTypes(5)
+
+			scA := test.StorageClass(test.StorageClassOptions{
+				ObjectMeta:        metav1.ObjectMeta{Name: "pruned-overlap-a"},
+				VolumeBindingMode: lo.ToPtr(storagev1.VolumeBindingWaitForFirstConsumer),
+				AllowedTopologies: []corev1.TopologySelectorTerm{
+					{MatchLabelExpressions: []corev1.TopologySelectorLabelRequirement{{Key: fake.ExoticInstanceLabelKey, Values: []string{"required"}}}},
+					{MatchLabelExpressions: []corev1.TopologySelectorLabelRequirement{{Key: fake.ExoticInstanceLabelKey, Values: []string{"optional"}}}},
+				},
+			})
+			scB := test.StorageClass(test.StorageClassOptions{
+				ObjectMeta:        metav1.ObjectMeta{Name: "pruned-overlap-b"},
+				VolumeBindingMode: lo.ToPtr(storagev1.VolumeBindingWaitForFirstConsumer),
+				AllowedTopologies: []corev1.TopologySelectorTerm{
+					{MatchLabelExpressions: []corev1.TopologySelectorLabelRequirement{{Key: corev1.LabelTopologyZone, Values: []string{"test-zone-1"}}, {Key: fake.ExoticInstanceLabelKey, Values: []string{"optional"}}}},
+					{MatchLabelExpressions: []corev1.TopologySelectorLabelRequirement{{Key: corev1.LabelTopologyZone, Values: []string{"test-zone-2"}}, {Key: fake.ExoticInstanceLabelKey, Values: []string{"required"}}}},
+				},
+			})
+			pvcA := test.PersistentVolumeClaim(test.PersistentVolumeClaimOptions{
+				ObjectMeta:       metav1.ObjectMeta{Name: "pruned-overlap-pvc-a"},
+				StorageClassName: lo.ToPtr(scA.Name),
+			})
+			pvcB := test.PersistentVolumeClaim(test.PersistentVolumeClaimOptions{
+				ObjectMeta:       metav1.ObjectMeta{Name: "pruned-overlap-pvc-b"},
+				StorageClassName: lo.ToPtr(scB.Name),
+			})
+			pod := test.UnschedulablePod(test.PodOptions{
+				ObjectMeta:             metav1.ObjectMeta{Name: "pruned-overlap-pod"},
+				PersistentVolumeClaims: []string{pvcA.Name, pvcB.Name},
+			})
+
+			ExpectApplied(ctx, env.Client, nodePool, scA, scB, pvcA, pvcB, pod)
+			ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pod)
+
+			node := ExpectScheduled(ctx, env.Client, pod)
+			Expect(node.Labels).To(HaveKeyWithValue(corev1.LabelTopologyZone, "test-zone-1"))
+			Expect(node.Labels).To(HaveKeyWithValue(fake.ExoticInstanceLabelKey, "optional"))
 		})
 		It("should launch nodes for pods with ephemeral volume using the specified storage class name", func() {
 			// Launch an initial pod onto a node and register the CSI Node with a volume count limit of 1
@@ -3340,6 +3510,39 @@ var _ = Context("Scheduling", func() {
 			// no nodes should be created as the persistent volume is using an unsupported provisioner
 			Expect(nodeList.Items).To(HaveLen(0))
 		})
+		It("should not launch nodes for pod with storageClass that uses an unsupported topology key", func() {
+			scheduling.UnsupportedTopologyKeys = lo.Assign(scheduling.UnsupportedTopologyKeys, sets.New("topology.ebs.csi.aws.com/zone"))
+
+			sc := &storagev1.StorageClass{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "default-storage-class",
+				},
+				Provisioner:       "ebs.csi.eks.amazonaws.com",
+				VolumeBindingMode: lo.ToPtr(storagev1.VolumeBindingWaitForFirstConsumer),
+				AllowedTopologies: []corev1.TopologySelectorTerm{
+					{
+						MatchLabelExpressions: []corev1.TopologySelectorLabelRequirement{
+							{
+								Key:    "topology.ebs.csi.aws.com/zone",
+								Values: []string{"us-west-2a", "us-west-2b"},
+							},
+						},
+					},
+				},
+			}
+			pvc := test.PersistentVolumeClaim(test.PersistentVolumeClaimOptions{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "tmp-ephemeral",
+				},
+				StorageClassName: lo.ToPtr(sc.Name),
+			})
+			pod := test.UnschedulablePod(test.PodOptions{
+				PersistentVolumeClaims: []string{pvc.Name},
+			})
+			ExpectApplied(ctx, env.Client, nodePool, sc, pvc, pod)
+			ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pod)
+			ExpectNotScheduled(ctx, env.Client, pod)
+		})
 		It("should not launch nodes for pod with unbound volume for volumeBindingMode immediate", func() {
 			sc := test.StorageClass(test.StorageClassOptions{
 				ObjectMeta: metav1.ObjectMeta{
@@ -3384,6 +3587,48 @@ var _ = Context("Scheduling", func() {
 			ExpectDeletionTimestampSet(ctx, env.Client, pvc)
 			ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pod)
 			ExpectNotScheduled(ctx, env.Client, pod)
+		})
+		It("should not launch nodes for pod with bound persistentVolume that is marked for deletion", func() {
+			volumeName := "tmp-ephemeral"
+			pod := test.UnschedulablePod()
+			// Pod has an ephemeral volume claim that has NO storage class, so it should use the default one
+			pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
+				Name: volumeName,
+				VolumeSource: corev1.VolumeSource{
+					Ephemeral: &corev1.EphemeralVolumeSource{
+						VolumeClaimTemplate: &corev1.PersistentVolumeClaimTemplate{
+							Spec: corev1.PersistentVolumeClaimSpec{
+								AccessModes: []corev1.PersistentVolumeAccessMode{
+									corev1.ReadWriteOnce,
+								},
+								Resources: corev1.VolumeResourceRequirements{
+									Requests: corev1.ResourceList{
+										corev1.ResourceStorage: resource.MustParse("1Gi"),
+									},
+								},
+							},
+						},
+					},
+				},
+			})
+			pv := test.PersistentVolume(test.PersistentVolumeOptions{
+				Driver: "other-provider",
+			})
+			pvc := test.PersistentVolumeClaim(test.PersistentVolumeClaimOptions{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: pod.Namespace,
+					Name:      fmt.Sprintf("%s-%s", pod.Name, volumeName),
+				},
+				VolumeName: pv.Name,
+			})
+			ExpectApplied(ctx, env.Client, nodePool, pvc, pv, pod)
+			ExpectDeletionTimestampSet(ctx, env.Client, pv)
+			ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pod)
+
+			var nodeList corev1.NodeList
+			Expect(env.Client.List(ctx, &nodeList)).To(Succeed())
+			// no nodes should be created as the persistent volume has a deletion timestamp set
+			Expect(nodeList.Items).To(HaveLen(0))
 		})
 		It("should not launch nodes for pod with Lost persistentVolumeClaim", func() {
 			sc := test.StorageClass(test.StorageClassOptions{
@@ -4074,13 +4319,241 @@ var _ = Context("Scheduling", func() {
 			}
 
 			// step the clock so the metric isn't 0
-			fakeClock.Step(1 * time.Minute)
+			env.Clock.Step(1 * time.Minute)
 			_, err := prov.Schedule(ctx)
 			Expect(err).To(BeNil())
 
 			m, ok := FindMetricWithLabelValues("karpenter_pods_scheduling_decision_duration_seconds", nil)
 			Expect(ok).To(BeTrue())
 			Expect(lo.FromPtr(m.Histogram.SampleCount)).To(BeNumerically("==", val+3))
+		})
+		Context("Pending Pods by Effective Zone Metric", func() {
+			labels := map[string]string{"app": "pod-label"}
+			tsc := []corev1.TopologySpreadConstraint{{
+				TopologyKey:       corev1.LabelTopologyZone,
+				WhenUnsatisfiable: corev1.DoNotSchedule,
+				LabelSelector:     &metav1.LabelSelector{MatchLabels: labels},
+				MaxSkew:           1,
+			}}
+			pvcName := "pvc-name"
+			DescribeTable("should report metric correctly for volume constraints", func(pod *corev1.Pod, scZones []string, expectedZone string) {
+				nodePool = test.NodePool()
+				sc := test.StorageClass(test.StorageClassOptions{
+					ObjectMeta:        metav1.ObjectMeta{Name: "zone-sc"},
+					Provisioner:       lo.ToPtr(csiProvider),
+					VolumeBindingMode: lo.ToPtr(storagev1.VolumeBindingWaitForFirstConsumer),
+					Zones:             scZones,
+				})
+				pvc := test.PersistentVolumeClaim(test.PersistentVolumeClaimOptions{
+					ObjectMeta:       metav1.ObjectMeta{Name: pvcName},
+					StorageClassName: lo.ToPtr("zone-sc"),
+				})
+				ExpectApplied(ctx, env.Client, nodePool, sc, pvc)
+
+				ExpectApplied(ctx, env.Client, pod)
+				_, err := prov.Schedule(injection.WithControllerName(ctx, "provisioner"))
+				Expect(err).To(BeNil())
+
+				m, ok := FindMetricWithLabelValues("karpenter_scheduler_pending_pods_by_effective_zone_count",
+					map[string]string{"controller": "provisioner", "zone": expectedZone})
+				Expect(ok).To(BeTrue())
+				Expect(lo.FromPtr(m.Gauge.Value)).To(BeNumerically("==", 1))
+			},
+				Entry("when PVC does not restrict pod to a single zone",
+					test.UnschedulablePod(test.PodOptions{
+						Phase:                  corev1.PodPending,
+						PersistentVolumeClaims: []string{pvcName},
+					}), []string{"test-zone-1", "test-zone-2"}, "flexible",
+				),
+				Entry("when PVC restricts pod to a single zone",
+					test.UnschedulablePod(test.PodOptions{
+						Phase:                  corev1.PodPending,
+						PersistentVolumeClaims: []string{pvcName},
+					}), []string{"test-zone-1"}, "test-zone-1",
+				),
+				Entry("when PVC restricts pod to no zone",
+					test.UnschedulablePod(test.PodOptions{
+						Phase:                  corev1.PodPending,
+						NodeSelector:           map[string]string{corev1.LabelTopologyZone: "test-zone-1"},
+						PersistentVolumeClaims: []string{pvcName},
+					}), []string{"test-zone-2"}, "none",
+				),
+			)
+			DescribeTable("should report zone of pods corectly", func(existingPods []*corev1.Pod, pendingPods []*corev1.Pod, expectedZones map[string]int) {
+				nodePool = test.NodePool()
+				ExpectApplied(ctx, env.Client, nodePool)
+
+				ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, existingPods...)
+				for _, p := range existingPods {
+					ExpectScheduled(ctx, env.Client, p)
+				}
+				var nodeList corev1.NodeList
+				Expect(env.Client.List(ctx, &nodeList)).To(Succeed())
+				for _, node := range nodeList.Items {
+					ExpectReconcileSucceeded(ctx, nodeStateController, client.ObjectKey{Name: node.Name})
+				}
+
+				for _, p := range pendingPods {
+					ExpectApplied(ctx, env.Client, p)
+				}
+				_, err := prov.Schedule(injection.WithControllerName(ctx, "provisioner"))
+				Expect(err).To(BeNil())
+
+				for expectedZone, count := range expectedZones {
+					m, ok := FindMetricWithLabelValues("karpenter_scheduler_pending_pods_by_effective_zone_count",
+						map[string]string{"controller": "provisioner", "zone": expectedZone})
+					Expect(ok).To(BeTrue())
+					Expect(lo.FromPtr(m.Gauge.Value)).To(BeNumerically("==", count))
+				}
+			},
+				Entry("when pods are flexible to zones", []*corev1.Pod{},
+					test.UnschedulablePods(test.PodOptions{
+						Phase: corev1.PodPending}, 2),
+					map[string]int{"flexible": 2}),
+				Entry("when pods are flexible to zones", []*corev1.Pod{},
+					test.UnschedulablePods(test.PodOptions{
+						Phase:        corev1.PodPending,
+						NodeSelector: map[string]string{corev1.LabelTopologyZone: "test-zone-2"},
+					}, 3), map[string]int{"test-zone-2": 3}),
+				Entry("when multiple pods have different zone constraints", []*corev1.Pod{},
+					[]*corev1.Pod{
+						test.UnschedulablePod(test.PodOptions{
+							Phase:        corev1.PodPending,
+							NodeSelector: map[string]string{corev1.LabelTopologyZone: "test-zone-1"},
+						}),
+						test.UnschedulablePod(test.PodOptions{
+							Phase:        corev1.PodPending,
+							NodeSelector: map[string]string{corev1.LabelTopologyZone: "test-zone-2"},
+						}),
+					}, map[string]int{"test-zone-1": 1, "test-zone-2": 1}),
+				Entry("when pod has preffered zone affinity", []*corev1.Pod{},
+					[]*corev1.Pod{
+						test.UnschedulablePod(test.PodOptions{
+							Phase: corev1.PodPending,
+							NodePreferences: []corev1.NodeSelectorRequirement{
+								{Key: corev1.LabelTopologyZone, Operator: corev1.NodeSelectorOpIn, Values: []string{"test-zone-1"}},
+							},
+						}),
+					}, map[string]int{"flexible": 1}),
+				Entry("when pods have required pod affinity", []*corev1.Pod{
+					test.UnschedulablePod(test.PodOptions{
+						ObjectMeta:   metav1.ObjectMeta{Labels: labels},
+						NodeSelector: map[string]string{corev1.LabelTopologyZone: "test-zone-1"},
+					}),
+				}, []*corev1.Pod{
+					test.UnschedulablePod(test.PodOptions{
+						Phase: corev1.PodPending,
+						PodRequirements: []corev1.PodAffinityTerm{{
+							TopologyKey:   corev1.LabelTopologyZone,
+							LabelSelector: &metav1.LabelSelector{MatchLabels: labels},
+						}},
+					}),
+				}, map[string]int{"test-zone-1": 1}),
+				Entry("when pods have required pod anti-affinity", []*corev1.Pod{
+					test.UnschedulablePod(test.PodOptions{
+						ObjectMeta:   metav1.ObjectMeta{Labels: labels},
+						NodeSelector: map[string]string{corev1.LabelTopologyZone: "test-zone-1"},
+					}),
+					test.UnschedulablePod(test.PodOptions{
+						ObjectMeta:   metav1.ObjectMeta{Labels: labels},
+						NodeSelector: map[string]string{corev1.LabelTopologyZone: "test-zone-2"},
+					}),
+				}, []*corev1.Pod{
+					test.UnschedulablePod(test.PodOptions{
+						Phase: corev1.PodPending,
+						PodAntiRequirements: []corev1.PodAffinityTerm{{
+							TopologyKey:   corev1.LabelTopologyZone,
+							LabelSelector: &metav1.LabelSelector{MatchLabels: labels},
+						}},
+					}),
+				}, map[string]int{"test-zone-3": 1}),
+				Entry("when pods have restricting TSCs", []*corev1.Pod{
+					test.UnschedulablePod(test.PodOptions{
+						ObjectMeta:                metav1.ObjectMeta{Labels: labels},
+						NodeSelector:              map[string]string{corev1.LabelTopologyZone: "test-zone-1"},
+						TopologySpreadConstraints: tsc,
+					}),
+					test.UnschedulablePod(test.PodOptions{
+						ObjectMeta:                metav1.ObjectMeta{Labels: labels},
+						NodeSelector:              map[string]string{corev1.LabelTopologyZone: "test-zone-2"},
+						TopologySpreadConstraints: tsc,
+					}),
+				}, []*corev1.Pod{
+					test.UnschedulablePod(test.PodOptions{
+						Phase:                     corev1.PodPending,
+						ObjectMeta:                metav1.ObjectMeta{Labels: labels},
+						TopologySpreadConstraints: tsc,
+					}),
+				}, map[string]int{"test-zone-3": 1}),
+				Entry("when TSC is unsatisfiable", []*corev1.Pod{
+					test.UnschedulablePod(test.PodOptions{
+						ObjectMeta:   metav1.ObjectMeta{Labels: labels},
+						NodeSelector: map[string]string{corev1.LabelTopologyZone: "test-zone-1"},
+					}),
+					test.UnschedulablePod(test.PodOptions{
+						ObjectMeta:   metav1.ObjectMeta{Labels: labels},
+						NodeSelector: map[string]string{corev1.LabelTopologyZone: "test-zone-1"},
+					}),
+					test.UnschedulablePod(test.PodOptions{
+						ObjectMeta:   metav1.ObjectMeta{Labels: labels},
+						NodeSelector: map[string]string{corev1.LabelTopologyZone: "test-zone-2"},
+					}),
+					test.UnschedulablePod(test.PodOptions{
+						ObjectMeta:   metav1.ObjectMeta{Labels: labels},
+						NodeSelector: map[string]string{corev1.LabelTopologyZone: "test-zone-2"},
+					}),
+					test.UnschedulablePod(test.PodOptions{
+						ObjectMeta:   metav1.ObjectMeta{Labels: labels},
+						NodeSelector: map[string]string{corev1.LabelTopologyZone: "test-zone-3"},
+					}),
+					test.UnschedulablePod(test.PodOptions{
+						ObjectMeta:   metav1.ObjectMeta{Labels: labels},
+						NodeSelector: map[string]string{corev1.LabelTopologyZone: "test-zone-3"},
+					}),
+				}, []*corev1.Pod{
+					test.UnschedulablePod(test.PodOptions{
+						Phase: corev1.PodPending,
+						TopologySpreadConstraints: []corev1.TopologySpreadConstraint{{
+							TopologyKey:       corev1.LabelTopologyZone,
+							WhenUnsatisfiable: corev1.DoNotSchedule,
+							LabelSelector:     &metav1.LabelSelector{MatchLabels: labels},
+							MaxSkew:           1,
+							MinDomains:        lo.ToPtr(int32(4)),
+						}},
+					}),
+				}, map[string]int{"none": 1}),
+				Entry("when pod affinity is unsatisfiable", []*corev1.Pod{}, []*corev1.Pod{
+					test.UnschedulablePod(test.PodOptions{
+						Phase: corev1.PodPending,
+						PodRequirements: []corev1.PodAffinityTerm{{
+							TopologyKey:   corev1.LabelTopologyZone,
+							LabelSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"nonexistent": "label"}},
+						}},
+					}),
+				}, map[string]int{"none": 1}),
+				Entry("when pod anti-affinity is unsatisfiable", []*corev1.Pod{
+					test.UnschedulablePod(test.PodOptions{
+						ObjectMeta:   metav1.ObjectMeta{Labels: labels},
+						NodeSelector: map[string]string{corev1.LabelTopologyZone: "test-zone-1"},
+					}),
+					test.UnschedulablePod(test.PodOptions{
+						ObjectMeta:   metav1.ObjectMeta{Labels: labels},
+						NodeSelector: map[string]string{corev1.LabelTopologyZone: "test-zone-2"},
+					}),
+					test.UnschedulablePod(test.PodOptions{
+						ObjectMeta:   metav1.ObjectMeta{Labels: labels},
+						NodeSelector: map[string]string{corev1.LabelTopologyZone: "test-zone-3"},
+					}),
+				}, []*corev1.Pod{
+					test.UnschedulablePod(test.PodOptions{
+						Phase: corev1.PodPending,
+						PodAntiRequirements: []corev1.PodAffinityTerm{{
+							TopologyKey:   corev1.LabelTopologyZone,
+							LabelSelector: &metav1.LabelSelector{MatchLabels: labels},
+						}},
+					}),
+				}, map[string]int{"none": 1}),
+			)
 		})
 	})
 
@@ -4913,7 +5386,7 @@ var _ = Context("Scheduling", func() {
 			Expect(err).ToNot(HaveOccurred())
 			scheduler1 := scheduling.NewScheduler(ctx1, env.Client, []*v1.NodePool{nodePool}, cluster, nil, topology1,
 				map[string][]*cloudprovider.InstanceType{nodePool.Name: cloudProvider.InstanceTypes},
-				[]*corev1.Pod{draDaemonPod}, events.NewRecorder(&record.FakeRecorder{}), fakeClock, nil)
+				[]*corev1.Pod{draDaemonPod}, events.NewRecorder(&record.FakeRecorder{}), env.Clock, nil)
 			results1, err := scheduler1.Solve(ctx1, []*corev1.Pod{appPod})
 			Expect(err).ToNot(HaveOccurred())
 			Expect(results1.NewNodeClaims).To(HaveLen(1))
@@ -4926,7 +5399,7 @@ var _ = Context("Scheduling", func() {
 			Expect(err).ToNot(HaveOccurred())
 			scheduler2 := scheduling.NewScheduler(ctx2, env.Client, []*v1.NodePool{nodePool}, cluster, nil, topology2,
 				map[string][]*cloudprovider.InstanceType{nodePool.Name: cloudProvider.InstanceTypes},
-				[]*corev1.Pod{draDaemonPod}, events.NewRecorder(&record.FakeRecorder{}), fakeClock, nil)
+				[]*corev1.Pod{draDaemonPod}, events.NewRecorder(&record.FakeRecorder{}), env.Clock, nil)
 			results2, err := scheduler2.Solve(ctx2, []*corev1.Pod{appPod})
 			Expect(err).ToNot(HaveOccurred())
 			Expect(results2.NewNodeClaims).To(HaveLen(1))

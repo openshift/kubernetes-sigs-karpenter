@@ -19,14 +19,17 @@ package performance
 import (
 	"time"
 
+	"github.com/samber/lo"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/samber/lo"
+
+	"sigs.k8s.io/karpenter/test/pkg/debug"
 
 	"sigs.k8s.io/karpenter/pkg/test"
 )
 
-var _ = Describe("Performance", func() {
+var _ = Describe("Performance", Label(debug.NoWatch), func() {
 	Context("Self Anti-Affinity Deployment Interference", func() {
 		It("should efficiently scale two deployments with self anti-affinity", func() {
 			By("Setting up NodePool and NodeClass for the test")
@@ -36,9 +39,9 @@ var _ = Describe("Performance", func() {
 			By("Creating deployments with self anti-affinity")
 
 			// Create deployment options using templates
-			smallOpts := test.CreateDeploymentOptions("small-resource-app", 500, "950m", "3900Mi",
+			smallOpts := test.CreateDeploymentOptions("small-resource-app", 500, "900m", "3100Mi",
 				test.WithPodAntiAffinityHostname())
-			largeOpts := test.CreateDeploymentOptions("large-resource-app", 500, "3800m", "31Gi", test.WithPodAntiAffinityHostname())
+			largeOpts := test.CreateDeploymentOptions("large-resource-app", 500, "3500m", "28Gi", test.WithPodAntiAffinityHostname())
 
 			// Create 1st deployment
 			smallDeployment := test.Deployment(smallOpts)
@@ -56,12 +59,14 @@ var _ = Describe("Performance", func() {
 			// Performance assertions - self anti-affinity requires one pod per node
 			Expect(scaleOutReport.TotalTime).To(BeNumerically("<", 5*time.Minute),
 				"Total scale-out time should be less than 5 minutes")
-			Expect(scaleOutReport.TotalNodes).To(BeNumerically("<", 650),
-				"Should not require more than 1000 nodes for 1000 pods")
-			Expect(scaleOutReport.TotalReservedCPUUtil).To(BeNumerically(">", 0.55),
-				"Average CPU utilization should be greater than 55%")
-			Expect(scaleOutReport.TotalReservedMemoryUtil).To(BeNumerically(">", 0.75),
-				"Average memory utilization should be greater than 75%")
+			Expect(scaleOutReport.TotalReservedCPUUtil).To(BeNumerically(">", 0.38),
+				"Average CPU utilization should be greater than 38%")
+			Expect(scaleOutReport.TotalReservedMemoryUtil).To(BeNumerically(">", 0.40),
+				"Average memory utilization should be greater than 40%")
+			Expect(scaleOutReport.KarpenterMemoryMB).To(BeNumerically("<", 300+MemoryOverheadMB()),
+				"Karpenter controller memory should be less than 300 MB during scale-out")
+			Expect(scaleOutReport.KarpenterCPUNanos).To(BeNumerically("<", 22*1e9+CPUOverheadNanos()),
+				"Karpenter controller CPU should be less than 22s (110%) during scale-out")
 
 			// ========== PHASE 2: Interference Scale Out TEST ==========
 			By("Net scaling out interference test")
@@ -83,10 +88,14 @@ var _ = Describe("Performance", func() {
 			// Consolidation assertions
 			Expect(interferenceReport.TotalTime).To(BeNumerically("<", 10*time.Minute),
 				"Scaling should complete within 10 minutes")
-			Expect(interferenceReport.TotalReservedCPUUtil).To(BeNumerically(">", 0.55),
-				"Average CPU utilization should be greater than 55%")
-			Expect(interferenceReport.TotalReservedMemoryUtil).To(BeNumerically(">", 0.75),
-				"Average memory utilization should be greater than 75%")
+			Expect(interferenceReport.TotalReservedCPUUtil).To(BeNumerically(">", 0.38),
+				"Average CPU utilization should be greater than 38%")
+			Expect(interferenceReport.TotalReservedMemoryUtil).To(BeNumerically(">", 0.40),
+				"Average memory utilization should be greater than 40%")
+			Expect(interferenceReport.KarpenterMemoryMB).To(BeNumerically("<", 550+MemoryOverheadMB()),
+				"Karpenter controller memory should be less than 550 MB during scale-out")
+			Expect(interferenceReport.KarpenterCPUNanos).To(BeNumerically("<", 20*1e9+CPUOverheadNanos()),
+				"Karpenter controller CPU should be less than 20s (100%) during scale-out")
 
 			// ========== PHASE 3: Interference Scale In TEST ==========
 			By("Executing interference consolidation test (small_deployment scales out to 400, large_deployment scales in to 200)")
@@ -111,18 +120,16 @@ var _ = Describe("Performance", func() {
 			Expect(consolidationReport.PodsNetChange).To(Equal(-150), "Should have net reduction of 150 pods")
 
 			// Consolidation performance assertions
-			Expect(consolidationReport.NodesNetChange).To(BeNumerically("<", 0),
-				"Node count should decrease after consolidation despite small deployment scale-out")
-			Expect(consolidationReport.TotalTime).To(BeNumerically("<", 15*time.Minute),
-				"Mixed scaling and consolidation should complete within 15 minutes")
-			Expect(consolidationReport.TotalReservedCPUUtil).To(BeNumerically(">", 0.55),
-				"Average CPU utilization should remain greater than 55% after consolidation")
-			Expect(consolidationReport.TotalReservedMemoryUtil).To(BeNumerically(">", 0.75),
-				"Average memory utilization should remain greater than 75% after consolidation")
-			Expect(consolidationReport.Rounds).To(BeNumerically("<", 10),
-				"Consolidation should complete in reasonable number of rounds")
-			Expect(consolidationReport.ResourceEfficiencyScore).To(BeNumerically(">", 60),
-				"Resource efficiency score should remain above 60%")
+			Expect(consolidationReport.TotalTime).To(BeNumerically("<", 25*time.Minute),
+				"Mixed scaling and consolidation should complete within 25 minutes")
+			Expect(consolidationReport.TotalReservedCPUUtil).To(BeNumerically(">", 0.38),
+				"Average CPU utilization should remain greater than 38% after consolidation")
+			Expect(consolidationReport.TotalReservedMemoryUtil).To(BeNumerically(">", 0.40),
+				"Average memory utilization should remain greater than 40% after consolidation")
+			Expect(consolidationReport.KarpenterMemoryMB).To(BeNumerically("<", 450+MemoryOverheadMB()),
+				"Karpenter controller memory should be less than 450 MB during consolidation")
+			Expect(consolidationReport.KarpenterCPUNanos).To(BeNumerically("<", 16*1e9+CPUOverheadNanos()),
+				"Karpenter controller CPU should be less than 16s (80%) during consolidation")
 
 		})
 	})

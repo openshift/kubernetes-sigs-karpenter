@@ -559,7 +559,7 @@ var _ = Describe("CEL/Validation", func() {
 		})
 		It("should allow more than 50 values if minValues is not specified.", func() {
 			var instanceTypes []string
-			for i := 0; i < 90; i++ {
+			for i := range 90 {
 				instanceTypes = append(instanceTypes, "instance"+strconv.Itoa(i))
 			}
 			nodePool.Spec.Template.Spec.Requirements = []NodeSelectorRequirementWithMinValues{

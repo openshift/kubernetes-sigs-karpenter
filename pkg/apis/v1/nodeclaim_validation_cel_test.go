@@ -241,7 +241,7 @@ var _ = Describe("Validation", func() {
 		})
 		It("should allow more than 50 values if minValues is not specified.", func() {
 			var instanceTypes []string
-			for i := 0; i < 90; i++ {
+			for i := range 90 {
 				instanceTypes = append(instanceTypes, "instance"+strconv.Itoa(i))
 			}
 			nodeClaim.Spec.Requirements = []NodeSelectorRequirementWithMinValues{
@@ -257,7 +257,7 @@ var _ = Describe("Validation", func() {
 		})
 		It("should error when requirements is greater than 100", func() {
 			var req []NodeSelectorRequirementWithMinValues
-			for i := 0; i < 101; i++ {
+			for range 101 {
 				req = append(req, NodeSelectorRequirementWithMinValues{Key: test.RandomName(), Operator: v1.NodeSelectorOpIn, Values: []string{test.RandomName()}})
 			}
 			nodeClaim.Spec.Requirements = req

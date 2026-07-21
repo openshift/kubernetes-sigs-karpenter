@@ -20,9 +20,10 @@ import (
 	"fmt"
 	"runtime"
 
+	"github.com/samber/lo"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
@@ -130,10 +131,10 @@ var _ = Describe("Memory Usage Overlay Scenarios", func() {
 
 			ms := captureMemStats()
 
-			for i := 0; i < 100; i++ {
+			for range 100 {
 				for _, np := range nodePools {
 					for _, it := range instanceTypes {
-						_, _ = store.apply(np, it)
+						_ = store.apply(np, it)
 					}
 				}
 			}
@@ -176,9 +177,9 @@ var _ = Describe("Memory Usage Overlay Scenarios", func() {
 
 			ms := captureMemStats()
 
-			for i := 0; i < 100; i++ {
+			for range 100 {
 				for _, it := range instanceTypes {
-					_, _ = store.apply("default", it)
+					_ = store.apply("default", it)
 				}
 			}
 
@@ -213,9 +214,9 @@ var _ = Describe("Memory Usage Overlay Scenarios", func() {
 
 			ms := captureMemStats()
 
-			for i := 0; i < 100; i++ {
+			for range 100 {
 				for _, it := range instanceTypes {
-					_, _ = store.apply("default", it)
+					_ = store.apply("default", it)
 				}
 			}
 
@@ -234,10 +235,10 @@ var _ = Describe("Memory Usage Overlay Scenarios", func() {
 
 			ms := captureMemStats()
 
-			for i := 0; i < 100; i++ {
+			for range 100 {
 				for _, np := range nodePools {
 					for _, it := range instanceTypes {
-						_, _ = store.apply(np, it)
+						_ = store.apply(np, it)
 					}
 				}
 			}
@@ -262,7 +263,7 @@ var _ = Describe("Memory Usage Scale With NodePools", func() {
 	DescribeTable("should scale linearly with node pool count",
 		func(count int) {
 			nodePools := make([]string, count)
-			for i := 0; i < count; i++ {
+			for i := range count {
 				nodePools[i] = fmt.Sprintf("nodepool-%d", i)
 			}
 
@@ -270,10 +271,10 @@ var _ = Describe("Memory Usage Scale With NodePools", func() {
 
 			ms := captureMemStats()
 
-			for i := 0; i < 100; i++ {
+			for range 100 {
 				for _, np := range nodePools {
 					for _, it := range instanceTypes {
-						_, _ = store.apply(np, it)
+						_ = store.apply(np, it)
 					}
 				}
 			}
@@ -309,10 +310,10 @@ var _ = Describe("Memory Usage Scale With InstanceTypes", func() {
 
 			ms := captureMemStats()
 
-			for i := 0; i < 100; i++ {
+			for range 100 {
 				for _, np := range nodePools {
 					for _, it := range instanceTypes {
-						_, _ = store.apply(np, it)
+						_ = store.apply(np, it)
 					}
 				}
 			}

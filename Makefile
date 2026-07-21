@@ -1,6 +1,7 @@
 # This is the format of an AWS ECR Public Repo as an example.
 export KWOK_REPO ?= ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com
 export KARPENTER_NAMESPACE=kube-system
+export KIND_CLUSTER_NAME ?= test-cluster
 
 HELM_OPTS ?= --set logLevel=debug \
 			--set controller.resources.requests.cpu=1 \
@@ -106,6 +107,29 @@ test: ## Run tests
 test-memory: ## Run memory usage tests for node overlay store
 	go test -v ./pkg/controllers/nodeoverlay/... -run TestMemoryUsage
 
+test-dra: ## Run DRA KWOK driver unit tests
+	go test ./dra-kwok-driver/pkg/... \
+		-race \
+		-timeout 20m \
+		--ginkgo.focus="${FOCUS}" \
+		--ginkgo.randomize-all \
+		--ginkgo.v \
+		-cover
+
+e2etest-dra: ## Run DRA e2e integration tests
+	kubectl apply -f dra-kwok-driver/pkg/apis/crds/test.karpenter.sh_draconfigs.yaml
+	-kubectl delete draconfigs --all --ignore-not-found=true
+	-kubectl delete resourceslices --all --ignore-not-found=true
+	-pkill -f dra-kwok-driver || true
+	cd dra-kwok-driver && go build -o dra-kwok-driver main.go
+	cd dra-kwok-driver && ./dra-kwok-driver > /tmp/dra-driver.log 2>&1 & echo $$! > /tmp/dra-driver.pid
+	sleep 2
+	TEST_SUITE=dra $(MAKE) e2etests
+	-kubectl delete draconfigs --all --ignore-not-found=true
+	-kubectl delete resourceslices --all --ignore-not-found=true
+	-kill $$(cat /tmp/dra-driver.pid) 2>/dev/null || true
+	-rm -f /tmp/dra-driver.pid
+
 benchmark: ## Run benchmark tests for node overlay store
 	go test -bench=. -benchmem ./pkg/controllers/nodeoverlay/... -run=^$$
 
@@ -123,7 +147,9 @@ vulncheck: ## Verify code vulnerabilities
 	@go tool -modfile=go.tools.mod govulncheck ./pkg/...
 
 licenses: download ## Verifies dependency licenses
-	! go tool -modfile=go.tools.mod go-licenses csv ./... | grep -v -e 'MIT' -e 'Apache-2.0' -e 'BSD-3-Clause' -e 'BSD-2-Clause' -e 'ISC' -e 'MPL-2.0'
+	LICENSEFILE=$$(mktemp /tmp/licenses-XXXXXX.csv) && \
+	go tool -modfile=go.tools.mod go-licenses csv ./... > $$LICENSEFILE && \
+	! grep -v -e 'MIT' -e 'Apache-2.0' -e 'BSD-3-Clause' -e 'BSD-2-Clause' -e 'ISC' -e 'MPL-2.0' $$LICENSEFILE
 
 verify: ## Verify code. Includes codegen, docgen, dependencies, linting, formatting, etc
 	rm -rf vendor
@@ -168,4 +194,4 @@ openshift-toolchain: ## Install developer toolchain for OpenShift CI.
 gen_instance_types:
 	go run kwok/tools/gen_instance_types.go > kwok/cloudprovider/instance_types.json
 
-.PHONY: help presubmit install-kwok uninstall-kwok build apply delete test test-memory benchmark deflake vulncheck licenses verify download gen_instance_types
+.PHONY: help presubmit install-kwok uninstall-kwok build apply delete test test-memory test-dra e2etest-dra benchmark deflake vulncheck licenses verify download gen_instance_types setup-kind-dra delete-kind-dra apply-with-kind-dra
