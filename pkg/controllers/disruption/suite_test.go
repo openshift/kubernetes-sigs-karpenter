@@ -50,6 +50,7 @@ import (
 	"sigs.k8s.io/karpenter/pkg/cloudprovider"
 	"sigs.k8s.io/karpenter/pkg/cloudprovider/fake"
 	"sigs.k8s.io/karpenter/pkg/controllers/disruption"
+	"sigs.k8s.io/karpenter/pkg/controllers/dynamicresources/deviceallocation"
 	"sigs.k8s.io/karpenter/pkg/controllers/provisioning"
 	"sigs.k8s.io/karpenter/pkg/controllers/state"
 	"sigs.k8s.io/karpenter/pkg/controllers/state/informer"
@@ -69,6 +70,7 @@ var cluster *state.Cluster
 var disruptionController *disruption.Controller
 var pricingController *informer.PricingController
 var prov *provisioning.Provisioner
+var draController *deviceallocation.Controller
 var cloudProvider *fake.CloudProvider
 var nodeStateController *informer.NodeController
 var nodeClaimStateController *informer.NodeClaimController
@@ -99,7 +101,8 @@ var _ = BeforeSuite(func() {
 	nodeStateController = informer.NewNodeController(env.Client, cluster)
 	nodeClaimStateController = informer.NewNodeClaimController(env.Client, cloudProvider, cluster, clusterCost)
 	recorder = test.NewEventRecorder()
-	prov = provisioning.NewProvisioner(env.Client, recorder, cloudProvider, cluster, env.Clock)
+	draController = deviceallocation.NewController(env.Client)
+	prov = provisioning.NewProvisioner(env.Client, recorder, cloudProvider, cluster, env.Clock, draController)
 	queue = disruption.NewQueue(env.Client, recorder, cluster, env.Clock, prov)
 })
 
@@ -115,8 +118,14 @@ var _ = BeforeEach(func() {
 
 	recorder.Reset() // Reset the events that we captured during the run
 
+	// Rebuild the DRA device-allocation controller and the provisioner bound to it each test so DRA tracking state
+	// (which the controller accumulates across reconciles and never resets) doesn't leak between specs. This must
+	// happen before the disruptionController and queue below, which capture prov. Mirrors the provisioning suite.
+	draController = deviceallocation.NewController(env.Client)
+	prov = provisioning.NewProvisioner(env.Client, recorder, cloudProvider, cluster, env.Clock, draController)
+
 	// Ensure that we reset the disruption controller's methods after each test run
-	disruptionController = disruption.NewController(env.Clock, env.Client, prov, cloudProvider, recorder, cluster, queue, disruption.WithMethods(NewMethodsWithNopValidator()...))
+	disruptionController = disruption.NewController(env.Clock, env.Client, prov, cloudProvider, recorder, cluster, queue, clusterCost, disruption.WithMethods(NewMethodsWithNopValidator()...))
 	env.Clock.SetTime(time.Now())
 	cluster.Reset()
 	*queue = lo.FromPtr(disruption.NewQueue(env.Client, recorder, cluster, env.Clock, prov))
@@ -241,7 +250,7 @@ var _ = Describe("Simulate Scheduling", func() {
 		candidate, err := disruption.NewCandidate(ctx, env.Client, recorder, env.Clock, stateNode, pdbs, nodePoolMap, nodePoolToInstanceTypesMap, queue, disruption.GracefulDisruptionClass)
 		Expect(err).To(Succeed())
 
-		results, err := disruption.SimulateScheduling(ctx, env.Client, cluster, prov, env.Clock, recorder, candidate)
+		results, err := disruption.SimulateScheduling(ctx, env.Client, cluster, prov, env.Clock, recorder, nil, candidate)
 		Expect(err).To(Succeed())
 		Expect(results.PodErrors[pod]).To(BeNil())
 	})
@@ -390,7 +399,7 @@ var _ = Describe("Simulate Scheduling", func() {
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "local-path",
 			},
-			Provisioner: lo.ToPtr("kubernetes.io/no-provisioner"),
+			Provisioner: new("kubernetes.io/no-provisioner"),
 		})
 		persistentVolume := test.PersistentVolume(test.PersistentVolumeOptions{UseLocal: true})
 		persistentVolume.Spec.NodeAffinity = &corev1.VolumeNodeAffinity{
@@ -418,8 +427,8 @@ var _ = Describe("Simulate Scheduling", func() {
 						Kind:               "StatefulSet",
 						Name:               ss.Name,
 						UID:                ss.UID,
-						Controller:         lo.ToPtr(true),
-						BlockOwnerDeletion: lo.ToPtr(true),
+						Controller:         new(true),
+						BlockOwnerDeletion: new(true),
 					},
 				},
 			},
@@ -461,9 +470,9 @@ var _ = Describe("Simulate Scheduling", func() {
 		hangCreateClient := newHangCreateClient(env.Client)
 		defer hangCreateClient.Stop()
 
-		p := provisioning.NewProvisioner(hangCreateClient, recorder, cloudProvider, cluster, env.Clock)
+		p := provisioning.NewProvisioner(hangCreateClient, recorder, cloudProvider, cluster, env.Clock, deviceallocation.NewController(hangCreateClient))
 		q := disruption.NewQueue(hangCreateClient, recorder, cluster, env.Clock, p)
-		dc := disruption.NewController(env.Clock, hangCreateClient, p, cloudProvider, recorder, cluster, q)
+		dc := disruption.NewController(env.Clock, hangCreateClient, p, cloudProvider, recorder, cluster, q, clusterCost)
 
 		nodeClaim, node := test.NodeClaimAndNode(v1.NodeClaim{
 			ObjectMeta: metav1.ObjectMeta{
@@ -499,8 +508,8 @@ var _ = Describe("Simulate Scheduling", func() {
 						Kind:               "ReplicaSet",
 						Name:               rs.Name,
 						UID:                rs.UID,
-						Controller:         lo.ToPtr(true),
-						BlockOwnerDeletion: lo.ToPtr(true),
+						Controller:         new(true),
+						BlockOwnerDeletion: new(true),
 					},
 				}}})
 
@@ -531,36 +540,32 @@ var _ = Describe("Disruption Taints", func() {
 	var nodeClaim *v1.NodeClaim
 	var node *corev1.Node
 	BeforeEach(func() {
-		currentInstance := fake.NewInstanceType(fake.InstanceTypeOptions{
-			Name: "current-on-demand",
-			Offerings: []*cloudprovider.Offering{
-				{
-					Available:    false,
-					Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeOnDemand, corev1.LabelTopologyZone: "test-zone-1a"}),
-					Price:        1.5,
-				},
-			},
-		})
-		replacementInstance := fake.NewInstanceType(fake.InstanceTypeOptions{
-			Name: "spot-replacement",
-			Offerings: []*cloudprovider.Offering{
-				{
+		currentInstance := fake.NewInstanceType("current-on-demand",
+			fake.WithOfferings(cloudprovider.Offering{
+				Available:    false,
+				Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeOnDemand, corev1.LabelTopologyZone: "test-zone-1a"}),
+				Price:        1.5,
+			}),
+		)
+		replacementInstance := fake.NewInstanceType("spot-replacement",
+			fake.WithOfferings(
+				cloudprovider.Offering{
 					Available:    true,
 					Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeSpot, corev1.LabelTopologyZone: "test-zone-1a"}),
 					Price:        1.0,
 				},
-				{
+				cloudprovider.Offering{
 					Available:    true,
 					Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeSpot, corev1.LabelTopologyZone: "test-zone-1b"}),
 					Price:        0.2,
 				},
-				{
+				cloudprovider.Offering{
 					Available:    true,
 					Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeSpot, corev1.LabelTopologyZone: "test-zone-1c"}),
 					Price:        0.4,
 				},
-			},
-		})
+			),
+		)
 		nodePool = test.NodePool()
 		nodeClaim, node = test.NodeClaimAndNode(v1.NodeClaim{
 			ObjectMeta: metav1.ObjectMeta{
@@ -888,13 +893,13 @@ var _ = Describe("Pod Eviction Cost", func() {
 	})
 	It("should have a higher disruptionCost for a pod with a higher priority", func() {
 		cost := disruptionutils.EvictionCost(ctx, &corev1.Pod{
-			Spec: corev1.PodSpec{Priority: lo.ToPtr(int32(1))},
+			Spec: corev1.PodSpec{Priority: new(int32(1))},
 		})
 		Expect(cost).To(BeNumerically(">", standardPodCost))
 	})
 	It("should have a lower disruptionCost for a pod with a lower priority", func() {
 		cost := disruptionutils.EvictionCost(ctx, &corev1.Pod{
-			Spec: corev1.PodSpec{Priority: lo.ToPtr(int32(-1))},
+			Spec: corev1.PodSpec{Priority: new(int32(-1))},
 		})
 		Expect(cost).To(BeNumerically("<", standardPodCost))
 	})
@@ -970,7 +975,7 @@ var _ = Describe("Candidate Filtering", func() {
 						Kind:       "Node",
 						Name:       node.Name,
 						UID:        node.UID,
-						Controller: lo.ToPtr(true),
+						Controller: new(true),
 					},
 				},
 			},
@@ -1009,7 +1014,7 @@ var _ = Describe("Candidate Filtering", func() {
 						Kind:       "DaemonSet",
 						Name:       daemonSet.Name,
 						UID:        daemonSet.UID,
-						Controller: lo.ToPtr(true),
+						Controller: new(true),
 					},
 				},
 			},
@@ -1413,7 +1418,7 @@ var _ = Describe("Candidate Filtering", func() {
 						Kind:       "DaemonSet",
 						Name:       daemonSet.Name,
 						UID:        daemonSet.UID,
-						Controller: lo.ToPtr(true),
+						Controller: new(true),
 					},
 				},
 			},
@@ -1459,7 +1464,7 @@ var _ = Describe("Candidate Filtering", func() {
 						Kind:       "Node",
 						Name:       node.Name,
 						UID:        node.UID,
-						Controller: lo.ToPtr(true),
+						Controller: new(true),
 					},
 				},
 			},
@@ -1938,14 +1943,17 @@ var _ = Describe("Metrics", func() {
 		// inform cluster state about nodes and nodeclaims
 		ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, env.Clock, nodeStateController, nodeClaimStateController, []*corev1.Node{node}, []*v1.NodeClaim{nodeClaim})
 		ExpectSingletonReconciled(ctx, disruptionController)
+		// Empty nodes are handled by the Emptiness method with reason "empty"
 		ExpectMetricCounterValue(disruption.DecisionsPerformedTotal, 1, map[string]string{
-			"decision":          "delete",
-			metrics.ReasonLabel: "empty",
+			"decision":           "delete",
+			metrics.ReasonLabel:  "empty",
+			"consolidation_type": "empty",
 		})
 		ExpectMetricCounterValue(disruption.NodepoolDecisionsPerformed, 1, map[string]string{
 			metrics.NodePoolLabel: nodePool.Name,
 			"decision":            "delete",
 			metrics.ReasonLabel:   "empty",
+			"consolidation_type":  "empty",
 		})
 	})
 	It("should fire metrics for single node delete disruption", func() {
@@ -2012,6 +2020,7 @@ var _ = Describe("Metrics", func() {
 		// inform cluster state about nodes and nodeclaims
 		ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, env.Clock, nodeStateController, nodeClaimStateController, []*corev1.Node{nodes[0], nodes[1], nodes[2]}, []*v1.NodeClaim{nodeClaims[0], nodeClaims[1], nodeClaims[2]})
 		ExpectSingletonReconciled(ctx, disruptionController)
+		// Empty nodes are handled by the Emptiness method with reason "empty"
 		ExpectMetricCounterValue(disruption.DecisionsPerformedTotal, 1, map[string]string{
 			"decision":           "delete",
 			metrics.ReasonLabel:  "empty",
@@ -2036,8 +2045,8 @@ var _ = Describe("Metrics", func() {
 						Kind:               "ReplicaSet",
 						Name:               rs.Name,
 						UID:                rs.UID,
-						Controller:         lo.ToPtr(true),
-						BlockOwnerDeletion: lo.ToPtr(true),
+						Controller:         new(true),
+						BlockOwnerDeletion: new(true),
 					},
 				},
 			},
@@ -2096,8 +2105,8 @@ var _ = Describe("Metrics", func() {
 						Kind:               "ReplicaSet",
 						Name:               rs.Name,
 						UID:                rs.UID,
-						Controller:         lo.ToPtr(true),
-						BlockOwnerDeletion: lo.ToPtr(true),
+						Controller:         new(true),
+						BlockOwnerDeletion: new(true),
 					},
 				},
 			},
@@ -2157,8 +2166,8 @@ var _ = Describe("Metrics", func() {
 						Kind:               "ReplicaSet",
 						Name:               rs.Name,
 						UID:                rs.UID,
-						Controller:         lo.ToPtr(true),
-						BlockOwnerDeletion: lo.ToPtr(true),
+						Controller:         new(true),
+						BlockOwnerDeletion: new(true),
 					},
 				},
 			},

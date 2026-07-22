@@ -19,7 +19,6 @@ package nodeoverlay
 import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
@@ -81,19 +80,16 @@ var _ = Describe("Store Apply Selective Copy", func() {
 		},
 		Entry("no overlays - everything shared",
 			"no overlays - everything shared",
-			fake.NewInstanceType(fake.InstanceTypeOptions{
-				Name: "m5.large",
-				Offerings: []*cloudprovider.Offering{
-					{
-						Requirements: scheduling.NewRequirements(
-							scheduling.NewRequirement(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn, "us-west-2a"),
-							scheduling.NewRequirement(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, "on-demand"),
-						),
-						Price:     0.096,
-						Available: true,
-					},
-				},
-			}),
+			fake.NewInstanceType("m5.large",
+				fake.WithOfferings(cloudprovider.Offering{
+					Requirements: scheduling.NewRequirements(
+						scheduling.NewRequirement(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn, "us-west-2a"),
+						scheduling.NewRequirement(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, "on-demand"),
+					),
+					Price:     0.096,
+					Available: true,
+				}),
+			),
 			nil,
 			&capacityUpdate{OverlayUpdate: corev1.ResourceList{}},
 			true, // expectSharedReqs
@@ -104,17 +100,13 @@ var _ = Describe("Store Apply Selective Copy", func() {
 		Entry("price overlay only - offerings copied, others shared",
 			"price overlay only - offerings copied, others shared",
 			func() *cloudprovider.InstanceType {
-				return fake.NewInstanceType(fake.InstanceTypeOptions{
-					Name: "m5.large",
-				})
+				return fake.NewInstanceType("m5.large")
 			}(),
 			func() map[string]*priceUpdate {
-				it := fake.NewInstanceType(fake.InstanceTypeOptions{
-					Name: "m5.large",
-				})
+				it := fake.NewInstanceType("m5.large")
 				// Use actual requirements string from the generated instance type
 				return map[string]*priceUpdate{
-					it.Offerings[0].Requirements.String(): {OverlayUpdate: lo.ToPtr("+0.01"), lowestWeight: lo.ToPtr(int32(10))},
+					it.Offerings[0].Requirements.String(): {OverlayUpdate: new("+0.01"), lowestWeight: new(int32(10))},
 				}
 			}(),
 			&capacityUpdate{OverlayUpdate: corev1.ResourceList{}},
@@ -125,19 +117,16 @@ var _ = Describe("Store Apply Selective Copy", func() {
 		),
 		Entry("capacity overlay only - capacity copied, others shared",
 			"capacity overlay only - capacity copied, others shared",
-			fake.NewInstanceType(fake.InstanceTypeOptions{
-				Name: "m5.large",
-				Offerings: []*cloudprovider.Offering{
-					{
-						Requirements: scheduling.NewRequirements(
-							scheduling.NewRequirement(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn, "us-west-2a"),
-							scheduling.NewRequirement(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, "on-demand"),
-						),
-						Price:     0.096,
-						Available: true,
-					},
-				},
-			}),
+			fake.NewInstanceType("m5.large",
+				fake.WithOfferings(cloudprovider.Offering{
+					Requirements: scheduling.NewRequirements(
+						scheduling.NewRequirement(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn, "us-west-2a"),
+						scheduling.NewRequirement(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, "on-demand"),
+					),
+					Price:     0.096,
+					Available: true,
+				}),
+			),
 			nil,
 			&capacityUpdate{
 				OverlayUpdate: corev1.ResourceList{
@@ -152,16 +141,12 @@ var _ = Describe("Store Apply Selective Copy", func() {
 		Entry("both overlays - only modified fields copied",
 			"both overlays - only modified fields copied",
 			func() *cloudprovider.InstanceType {
-				return fake.NewInstanceType(fake.InstanceTypeOptions{
-					Name: "m5.large",
-				})
+				return fake.NewInstanceType("m5.large")
 			}(),
 			func() map[string]*priceUpdate {
-				it := fake.NewInstanceType(fake.InstanceTypeOptions{
-					Name: "m5.large",
-				})
+				it := fake.NewInstanceType("m5.large")
 				return map[string]*priceUpdate{
-					it.Offerings[0].Requirements.String(): {OverlayUpdate: lo.ToPtr("+0.01"), lowestWeight: lo.ToPtr(int32(10))},
+					it.Offerings[0].Requirements.String(): {OverlayUpdate: new("+0.01"), lowestWeight: new(int32(10))},
 				}
 			}(),
 			&capacityUpdate{
@@ -181,10 +166,9 @@ var _ = Describe("Store Apply Correctness", func() {
 	Context("with price overlay", func() {
 		It("should correctly apply price overlay to specific offerings", func() {
 			originalPrice := 0.096
-			instanceType := fake.NewInstanceType(fake.InstanceTypeOptions{
-				Name: "m5.large",
-				Offerings: []*cloudprovider.Offering{
-					{
+			instanceType := fake.NewInstanceType("m5.large",
+				fake.WithOfferings(
+					cloudprovider.Offering{
 						Requirements: scheduling.NewRequirements(
 							scheduling.NewRequirement(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn, "us-west-2a"),
 							scheduling.NewRequirement(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, "on-demand"),
@@ -192,7 +176,7 @@ var _ = Describe("Store Apply Correctness", func() {
 						Price:     originalPrice,
 						Available: true,
 					},
-					{
+					cloudprovider.Offering{
 						Requirements: scheduling.NewRequirements(
 							scheduling.NewRequirement(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn, "us-west-2b"),
 							scheduling.NewRequirement(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, "on-demand"),
@@ -200,8 +184,8 @@ var _ = Describe("Store Apply Correctness", func() {
 						Price:     originalPrice,
 						Available: true,
 					},
-				},
-			})
+				),
+			)
 
 			store := newInternalInstanceTypeStore()
 			store.evaluatedNodePools.Insert("default")
@@ -210,7 +194,7 @@ var _ = Describe("Store Apply Correctness", func() {
 					instanceType.Name: &instanceTypeUpdate{
 						Price: map[string]*priceUpdate{
 							// Only overlay the first offering
-							instanceType.Offerings[0].Requirements.String(): {OverlayUpdate: lo.ToPtr("+0.01"), lowestWeight: lo.ToPtr(int32(10))},
+							instanceType.Offerings[0].Requirements.String(): {OverlayUpdate: new("+0.01"), lowestWeight: new(int32(10))},
 						},
 						Capacity: &capacityUpdate{OverlayUpdate: corev1.ResourceList{}},
 					},
@@ -235,13 +219,12 @@ var _ = Describe("Store Apply Correctness", func() {
 	Context("with capacity overlay", func() {
 		It("should correctly apply capacity overlay", func() {
 			originalMemory := resource.MustParse("8Gi")
-			instanceType := fake.NewInstanceType(fake.InstanceTypeOptions{
-				Name: "m5.large",
-				Resources: corev1.ResourceList{
+			instanceType := fake.NewInstanceType("m5.large",
+				fake.WithResources(corev1.ResourceList{
 					corev1.ResourceMemory: originalMemory,
 					corev1.ResourceCPU:    resource.MustParse("2"),
-				},
-			})
+				}),
+			)
 
 			store := newInternalInstanceTypeStore()
 			store.evaluatedNodePools.Insert("default")
@@ -277,19 +260,16 @@ var _ = Describe("Store Apply Correctness", func() {
 
 var _ = Describe("Store Apply Isolation Between NodePools", func() {
 	It("should apply different overlays to different node pools", func() {
-		instanceType := fake.NewInstanceType(fake.InstanceTypeOptions{
-			Name: "m5.large",
-			Offerings: []*cloudprovider.Offering{
-				{
-					Requirements: scheduling.NewRequirements(
-						scheduling.NewRequirement(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn, "us-west-2a"),
-						scheduling.NewRequirement(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, "on-demand"),
-					),
-					Price:     0.096,
-					Available: true,
-				},
-			},
-		})
+		instanceType := fake.NewInstanceType("m5.large",
+			fake.WithOfferings(cloudprovider.Offering{
+				Requirements: scheduling.NewRequirements(
+					scheduling.NewRequirement(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn, "us-west-2a"),
+					scheduling.NewRequirement(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, "on-demand"),
+				),
+				Price:     0.096,
+				Available: true,
+			}),
+		)
 
 		store := newInternalInstanceTypeStore()
 		store.evaluatedNodePools.Insert("nodepool-a", "nodepool-b")
@@ -300,7 +280,7 @@ var _ = Describe("Store Apply Isolation Between NodePools", func() {
 			"nodepool-a": {
 				instanceType.Name: &instanceTypeUpdate{
 					Price: map[string]*priceUpdate{
-						instanceType.Offerings[0].Requirements.String(): {OverlayUpdate: lo.ToPtr("+10%"), lowestWeight: lo.ToPtr(int32(10))},
+						instanceType.Offerings[0].Requirements.String(): {OverlayUpdate: new("+10%"), lowestWeight: new(int32(10))},
 					},
 					Capacity: &capacityUpdate{OverlayUpdate: corev1.ResourceList{}},
 				},
@@ -308,7 +288,7 @@ var _ = Describe("Store Apply Isolation Between NodePools", func() {
 			"nodepool-b": {
 				instanceType.Name: &instanceTypeUpdate{
 					Price: map[string]*priceUpdate{
-						instanceType.Offerings[0].Requirements.String(): {OverlayUpdate: lo.ToPtr("-5%"), lowestWeight: lo.ToPtr(int32(10))},
+						instanceType.Offerings[0].Requirements.String(): {OverlayUpdate: new("-5%"), lowestWeight: new(int32(10))},
 					},
 					Capacity: &capacityUpdate{OverlayUpdate: corev1.ResourceList{}},
 				},
@@ -339,9 +319,7 @@ var _ = Describe("Store Apply Isolation Between NodePools", func() {
 
 var _ = Describe("Store Apply Unevaluated NodePool", func() {
 	It("should return error for unevaluated node pool", func() {
-		instanceType := fake.NewInstanceType(fake.InstanceTypeOptions{
-			Name: "m5.large",
-		})
+		instanceType := fake.NewInstanceType("m5.large")
 
 		publicStore := NewInstanceTypeStore()
 		store := newInternalInstanceTypeStore()
@@ -360,10 +338,9 @@ var _ = Describe("NodeOverlay Store Integration", func() {
 	It("should integrate overlays through the public interface", func() {
 		// Create a realistic scenario with multiple instance types and overlays
 		instanceTypes := []*cloudprovider.InstanceType{
-			fake.NewInstanceType(fake.InstanceTypeOptions{
-				Name: "m5.large",
-				Offerings: []*cloudprovider.Offering{
-					{
+			fake.NewInstanceType("m5.large",
+				fake.WithOfferings(
+					cloudprovider.Offering{
 						Requirements: scheduling.NewRequirements(
 							scheduling.NewRequirement(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn, "us-west-2a"),
 							scheduling.NewRequirement(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, "on-demand"),
@@ -371,7 +348,7 @@ var _ = Describe("NodeOverlay Store Integration", func() {
 						Price:     0.096,
 						Available: true,
 					},
-					{
+					cloudprovider.Offering{
 						Requirements: scheduling.NewRequirements(
 							scheduling.NewRequirement(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn, "us-west-2a"),
 							scheduling.NewRequirement(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, "spot"),
@@ -379,29 +356,26 @@ var _ = Describe("NodeOverlay Store Integration", func() {
 						Price:     0.0288,
 						Available: true,
 					},
-				},
-				Resources: corev1.ResourceList{
+				),
+				fake.WithResources(corev1.ResourceList{
 					corev1.ResourceMemory: resource.MustParse("8Gi"),
 					corev1.ResourceCPU:    resource.MustParse("2"),
-				},
-			}),
-			fake.NewInstanceType(fake.InstanceTypeOptions{
-				Name: "m5.xlarge",
-				Offerings: []*cloudprovider.Offering{
-					{
-						Requirements: scheduling.NewRequirements(
-							scheduling.NewRequirement(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn, "us-west-2a"),
-							scheduling.NewRequirement(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, "on-demand"),
-						),
-						Price:     0.192,
-						Available: true,
-					},
-				},
-				Resources: corev1.ResourceList{
+				}),
+			),
+			fake.NewInstanceType("m5.xlarge",
+				fake.WithOfferings(cloudprovider.Offering{
+					Requirements: scheduling.NewRequirements(
+						scheduling.NewRequirement(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn, "us-west-2a"),
+						scheduling.NewRequirement(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, "on-demand"),
+					),
+					Price:     0.192,
+					Available: true,
+				}),
+				fake.WithResources(corev1.ResourceList{
 					corev1.ResourceMemory: resource.MustParse("16Gi"),
 					corev1.ResourceCPU:    resource.MustParse("4"),
-				},
-			}),
+				}),
+			),
 		}
 
 		publicStore := NewInstanceTypeStore()
@@ -411,7 +385,7 @@ var _ = Describe("NodeOverlay Store Integration", func() {
 		// Apply overlays to m5.large: add hugepages and adjust spot pricing
 		overlay := v1alpha1.NodeOverlay{
 			Spec: v1alpha1.NodeOverlaySpec{
-				Weight: lo.ToPtr(int32(100)),
+				Weight: new(int32(100)),
 				Capacity: corev1.ResourceList{
 					"hugepages-2Mi": resource.MustParse("100Mi"),
 				},

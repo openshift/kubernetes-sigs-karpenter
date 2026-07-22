@@ -143,7 +143,7 @@ func (t *taintAdder) Reconcile(ctx context.Context, req reconcile.Request) (reco
 func (t *taintAdder) Builder(mgr manager.Manager) *controllerruntime.Builder {
 	return controllerruntime.NewControllerManagedBy(mgr).
 		For(&corev1.Node{}).
-		WithOptions(controller.Options{SkipNameValidation: lo.ToPtr(true)}).
+		WithOptions(controller.Options{SkipNameValidation: new(true)}).
 		WithEventFilter(predicate.NewPredicateFuncs(func(obj client.Object) bool {
 			node := obj.(*corev1.Node)
 			if _, ok := node.Labels[test.DiscoveryLabel]; !ok {

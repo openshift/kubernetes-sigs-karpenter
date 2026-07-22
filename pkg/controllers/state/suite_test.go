@@ -239,7 +239,7 @@ var _ = Describe("Volume Usage/Limits", func() {
 		})
 		sc = test.StorageClass(test.StorageClassOptions{
 			ObjectMeta:  metav1.ObjectMeta{Name: "my-storage-class"},
-			Provisioner: lo.ToPtr(csiProvider),
+			Provisioner: new(csiProvider),
 			Zones:       []string{"test-zone-1"},
 		})
 		csiNode = &storagev1.CSINode{
@@ -252,7 +252,7 @@ var _ = Describe("Volume Usage/Limits", func() {
 						Name:   csiProvider,
 						NodeID: "fake-node-id",
 						Allocatable: &storagev1.VolumeNodeResources{
-							Count: lo.ToPtr(int32(10)),
+							Count: new(int32(10)),
 						},
 					},
 				},
@@ -263,7 +263,7 @@ var _ = Describe("Volume Usage/Limits", func() {
 		ExpectApplied(ctx, env.Client, sc, node, csiNode)
 		for range 10 {
 			pvc := test.PersistentVolumeClaim(test.PersistentVolumeClaimOptions{
-				StorageClassName: lo.ToPtr(sc.Name),
+				StorageClassName: new(sc.Name),
 			})
 			pod := test.Pod(test.PodOptions{
 				PersistentVolumeClaims: []string{pvc.Name},
@@ -284,7 +284,7 @@ var _ = Describe("Volume Usage/Limits", func() {
 		ExpectApplied(ctx, env.Client, sc, nodeClaim, node, csiNode)
 		for range 10 {
 			pvc := test.PersistentVolumeClaim(test.PersistentVolumeClaimOptions{
-				StorageClassName: lo.ToPtr(sc.Name),
+				StorageClassName: new(sc.Name),
 			})
 			pod := test.Pod(test.PodOptions{
 				PersistentVolumeClaims: []string{pvc.Name},
@@ -315,7 +315,7 @@ var _ = Describe("Volume Usage/Limits", func() {
 		var pvcs []*corev1.PersistentVolumeClaim
 		for range 10 {
 			pvc := test.PersistentVolumeClaim(test.PersistentVolumeClaimOptions{
-				StorageClassName: lo.ToPtr(sc.Name),
+				StorageClassName: new(sc.Name),
 			})
 			pod := test.Pod(test.PodOptions{
 				PersistentVolumeClaims: []string{pvc.Name},
@@ -868,8 +868,8 @@ var _ = Describe("Node Resource Level", func() {
 			Kind:               "DaemonSet",
 			Name:               ds.Name,
 			UID:                ds.UID,
-			Controller:         lo.ToPtr(true),
-			BlockOwnerDeletion: lo.ToPtr(true),
+			Controller:         new(true),
+			BlockOwnerDeletion: new(true),
 		})
 
 		node := test.Node(test.NodeOptions{
@@ -1590,8 +1590,8 @@ var _ = Describe("DaemonSet Controller", func() {
 							Kind:               "DaemonSet",
 							Name:               daemonset.Name,
 							UID:                daemonset.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					},
 				},
@@ -1618,8 +1618,8 @@ var _ = Describe("DaemonSet Controller", func() {
 							Kind:               "DaemonSet",
 							Name:               daemonset.Name,
 							UID:                daemonset.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					},
 				},
@@ -1639,8 +1639,8 @@ var _ = Describe("DaemonSet Controller", func() {
 							Kind:               "DaemonSet",
 							Name:               daemonset.Name,
 							UID:                daemonset.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					},
 				},
@@ -1667,8 +1667,8 @@ var _ = Describe("DaemonSet Controller", func() {
 							Kind:               "DaemonSet",
 							Name:               daemonset.Name,
 							UID:                daemonset.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					},
 				},
@@ -2987,3 +2987,57 @@ func ExpectStateNodeCount(comparator string, count int) int {
 	Expect(c).To(BeNumerically(comparator, count))
 	return c
 }
+
+var _ = Describe("Buffer Pod Counts", func() {
+	It("should return false for unknown providerIDs", func() {
+		Expect(cluster.HasBufferPods("unknown-provider-id")).To(BeFalse())
+		Expect(cluster.BufferPodCount("unknown-provider-id")).To(Equal(0))
+	})
+
+	It("should track buffer pods after UpdateBufferPodCounts", func() {
+		cluster.UpdateBufferPodCounts(map[string]int{
+			"provider-a": 3,
+			"provider-b": 1,
+		})
+		Expect(cluster.HasBufferPods("provider-a")).To(BeTrue())
+		Expect(cluster.BufferPodCount("provider-a")).To(Equal(3))
+		Expect(cluster.HasBufferPods("provider-b")).To(BeTrue())
+		Expect(cluster.BufferPodCount("provider-b")).To(Equal(1))
+		Expect(cluster.HasBufferPods("provider-c")).To(BeFalse())
+	})
+
+	It("should clear old entries when UpdateBufferPodCounts is called with new map", func() {
+		cluster.UpdateBufferPodCounts(map[string]int{
+			"provider-a": 5,
+		})
+		Expect(cluster.HasBufferPods("provider-a")).To(BeTrue())
+
+		// Update with a map that doesn't contain provider-a
+		cluster.UpdateBufferPodCounts(map[string]int{
+			"provider-b": 2,
+		})
+		Expect(cluster.HasBufferPods("provider-a")).To(BeFalse())
+		Expect(cluster.BufferPodCount("provider-a")).To(Equal(0))
+		Expect(cluster.HasBufferPods("provider-b")).To(BeTrue())
+		Expect(cluster.BufferPodCount("provider-b")).To(Equal(2))
+	})
+
+	It("should clear all entries when called with empty map", func() {
+		cluster.UpdateBufferPodCounts(map[string]int{
+			"provider-a": 3,
+			"provider-b": 1,
+		})
+		cluster.UpdateBufferPodCounts(map[string]int{})
+		Expect(cluster.HasBufferPods("provider-a")).To(BeFalse())
+		Expect(cluster.HasBufferPods("provider-b")).To(BeFalse())
+	})
+
+	It("should not store entries with count zero", func() {
+		cluster.UpdateBufferPodCounts(map[string]int{
+			"provider-a": 0,
+			"provider-b": 3,
+		})
+		Expect(cluster.HasBufferPods("provider-a")).To(BeFalse())
+		Expect(cluster.HasBufferPods("provider-b")).To(BeTrue())
+	})
+})

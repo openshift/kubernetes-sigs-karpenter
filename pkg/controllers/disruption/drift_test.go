@@ -200,8 +200,8 @@ var _ = Describe("Drift", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 			// Bind the pods to the first n nodes.
@@ -289,8 +289,8 @@ var _ = Describe("Drift", func() {
 								Kind:               "ReplicaSet",
 								Name:               rs.Name,
 								UID:                rs.UID,
-								Controller:         lo.ToPtr(true),
-								BlockOwnerDeletion: lo.ToPtr(true),
+								Controller:         new(true),
+								BlockOwnerDeletion: new(true),
 							},
 						}}})
 				// Bind the pods to the first 2 nodes for each nodepool.
@@ -457,8 +457,8 @@ var _ = Describe("Drift", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 			nodeClaim2, node2 := test.NodeClaimAndNode(v1.NodeClaim{
@@ -616,8 +616,8 @@ var _ = Describe("Drift", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					},
 				},
@@ -717,8 +717,8 @@ var _ = Describe("Drift", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 
@@ -766,8 +766,8 @@ var _ = Describe("Drift", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 			nodeClaim2, node2 := test.NodeClaimAndNode(v1.NodeClaim{
@@ -847,8 +847,8 @@ var _ = Describe("Drift", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 			nodeClaim2, node2 := test.NodeClaimAndNode(v1.NodeClaim{
@@ -896,7 +896,7 @@ var _ = Describe("Drift", func() {
 				metrics.ReasonLabel: "drifted",
 			})
 		})
-		It("should give emptiness priority to delete drifted nodes when they are empty and consolidatable", func() {
+		It("should delete drifted nodes when they are empty and consolidatable", func() {
 			nodeClaim.StatusConditions().SetTrue(v1.ConditionTypeDrifted)
 			nodeClaim.StatusConditions().SetTrue(v1.ConditionTypeConsolidatable)
 			ExpectApplied(ctx, env.Client, nodePool, nodeClaim, node)
@@ -909,12 +909,12 @@ var _ = Describe("Drift", func() {
 			// Cascade any deletion of the nodeClaim to the node
 			ExpectNodeClaimsCascadeDeletion(ctx, env.Client, nodeClaim)
 
-			// we should delete the empty node
+			// we should delete the empty node via drift (drift runs before consolidation)
 			Expect(ExpectNodeClaims(ctx, env.Client)).To(HaveLen(0))
 			Expect(ExpectNodes(ctx, env.Client)).To(HaveLen(0))
 			ExpectNotFound(ctx, env.Client, nodeClaim, node)
 			ExpectMetricGaugeValue(disruption.EligibleNodes, 1, map[string]string{
-				metrics.ReasonLabel: "empty",
+				metrics.ReasonLabel: "drifted",
 			})
 		})
 		It("should untaint nodes when drift replacement fails", func() {
@@ -934,8 +934,8 @@ var _ = Describe("Drift", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					},
 				},
@@ -966,27 +966,21 @@ var _ = Describe("Drift", func() {
 			Expect(node.Spec.Taints).ToNot(ContainElement(v1.DisruptedNoScheduleTaint))
 		})
 		It("can replace drifted nodes with multiple nodes", func() {
-			currentInstance := fake.NewInstanceType(fake.InstanceTypeOptions{
-				Name: "current-on-demand",
-				Offerings: []*cloudprovider.Offering{
-					{
-						Available:    false,
-						Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeOnDemand, corev1.LabelTopologyZone: "test-zone-1a"}),
-						Price:        0.5,
-					},
-				},
-			})
-			replacementInstance := fake.NewInstanceType(fake.InstanceTypeOptions{
-				Name: "replacement-on-demand",
-				Offerings: []*cloudprovider.Offering{
-					{
-						Available:    true,
-						Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeOnDemand, corev1.LabelTopologyZone: "test-zone-1a"}),
-						Price:        0.3,
-					},
-				},
-				Resources: map[corev1.ResourceName]resource.Quantity{corev1.ResourceCPU: resource.MustParse("3")},
-			})
+			currentInstance := fake.NewInstanceType("current-on-demand",
+				fake.WithOfferings(cloudprovider.Offering{
+					Available:    false,
+					Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeOnDemand, corev1.LabelTopologyZone: "test-zone-1a"}),
+					Price:        0.5,
+				}),
+			)
+			replacementInstance := fake.NewInstanceType("replacement-on-demand",
+				fake.WithOfferings(cloudprovider.Offering{
+					Available:    true,
+					Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeOnDemand, corev1.LabelTopologyZone: "test-zone-1a"}),
+					Price:        0.3,
+				}),
+				fake.WithResources(corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("3")}),
+			)
 			cloudProvider.InstanceTypes = []*cloudprovider.InstanceType{
 				currentInstance,
 				replacementInstance,
@@ -1008,8 +1002,8 @@ var _ = Describe("Drift", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}},
 				// Make each pod request about a third of the allocatable on the node
@@ -1072,8 +1066,8 @@ var _ = Describe("Drift", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					},
 				},
@@ -1135,7 +1129,7 @@ var _ = Describe("Drift", func() {
 		It("should not consider static nodepool for drift", func() {
 			staticNp := test.StaticNodePool(v1.NodePool{
 				Spec: v1.NodePoolSpec{
-					Replicas:   lo.ToPtr(int64(2)), // Static nodepool with 2 desired replica
+					Replicas:   new(int64(2)), // Static nodepool with 2 desired replica
 					Disruption: v1.Disruption{},
 				},
 			})

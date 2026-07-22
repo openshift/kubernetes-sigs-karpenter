@@ -50,6 +50,7 @@ import (
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/cloudprovider"
 	"sigs.k8s.io/karpenter/pkg/cloudprovider/fake"
+	"sigs.k8s.io/karpenter/pkg/controllers/dynamicresources/deviceallocation"
 	"sigs.k8s.io/karpenter/pkg/controllers/provisioning"
 	"sigs.k8s.io/karpenter/pkg/controllers/provisioning/scheduling"
 	"sigs.k8s.io/karpenter/pkg/controllers/state"
@@ -99,7 +100,7 @@ var _ = BeforeSuite(func() {
 	nodeStateController = informer.NewNodeController(env.Client, cluster)
 	nodeClaimStateController = informer.NewNodeClaimController(env.Client, cloudProvider, cluster, clusterCost)
 	podStateController = informer.NewPodController(env.Client, cluster)
-	prov = provisioning.NewProvisioner(env.Client, events.NewRecorder(&record.FakeRecorder{}), cloudProvider, cluster, env.Clock)
+	prov = provisioning.NewProvisioner(env.Client, events.NewRecorder(&record.FakeRecorder{}), cloudProvider, cluster, env.Clock, deviceallocation.NewController(env.Client))
 	podController = provisioning.NewPodController(env.Client, prov, cluster)
 })
 
@@ -1761,57 +1762,48 @@ var _ = Context("Scheduling", func() {
 			// capacity sizes and prices don't correlate here, regardless we should filter and see that all three instance types
 			// are valid before preferring the cheapest one 'large'
 			cloudProvider.InstanceTypes = []*cloudprovider.InstanceType{
-				fake.NewInstanceType(fake.InstanceTypeOptions{
-					Name: "medium",
-					Resources: corev1.ResourceList{
+				fake.NewInstanceType("medium",
+					fake.WithResources(corev1.ResourceList{
 						corev1.ResourceCPU:    resource.MustParse("2"),
 						corev1.ResourceMemory: resource.MustParse("2Gi"),
-					},
-					Offerings: []*cloudprovider.Offering{
-						{
-							Available: true,
-							Requirements: pscheduling.NewLabelRequirements(map[string]string{
-								v1.CapacityTypeLabelKey:  v1.CapacityTypeOnDemand,
-								corev1.LabelTopologyZone: "test-zone-1a",
-							}),
-							Price: 3.00,
-						},
-					},
-				}),
-				fake.NewInstanceType(fake.InstanceTypeOptions{
-					Name: "small",
-					Resources: corev1.ResourceList{
+					}),
+					fake.WithOfferings(cloudprovider.Offering{
+						Available: true,
+						Requirements: pscheduling.NewLabelRequirements(map[string]string{
+							v1.CapacityTypeLabelKey:  v1.CapacityTypeOnDemand,
+							corev1.LabelTopologyZone: "test-zone-1a",
+						}),
+						Price: 3.00,
+					}),
+				),
+				fake.NewInstanceType("small",
+					fake.WithResources(corev1.ResourceList{
 						corev1.ResourceCPU:    resource.MustParse("1"),
 						corev1.ResourceMemory: resource.MustParse("1Gi"),
-					},
-					Offerings: []*cloudprovider.Offering{
-						{
-							Available: true,
-							Requirements: pscheduling.NewLabelRequirements(map[string]string{
-								v1.CapacityTypeLabelKey:  v1.CapacityTypeOnDemand,
-								corev1.LabelTopologyZone: "test-zone-1a",
-							}),
-							Price: 2.00,
-						},
-					},
-				}),
-				fake.NewInstanceType(fake.InstanceTypeOptions{
-					Name: "large",
-					Resources: corev1.ResourceList{
+					}),
+					fake.WithOfferings(cloudprovider.Offering{
+						Available: true,
+						Requirements: pscheduling.NewLabelRequirements(map[string]string{
+							v1.CapacityTypeLabelKey:  v1.CapacityTypeOnDemand,
+							corev1.LabelTopologyZone: "test-zone-1a",
+						}),
+						Price: 2.00,
+					}),
+				),
+				fake.NewInstanceType("large",
+					fake.WithResources(corev1.ResourceList{
 						corev1.ResourceCPU:    resource.MustParse("4"),
 						corev1.ResourceMemory: resource.MustParse("4Gi"),
-					},
-					Offerings: []*cloudprovider.Offering{
-						{
-							Available: true,
-							Requirements: pscheduling.NewLabelRequirements(map[string]string{
-								v1.CapacityTypeLabelKey:  v1.CapacityTypeOnDemand,
-								corev1.LabelTopologyZone: "test-zone-1a",
-							}),
-							Price: 1.00,
-						},
-					},
-				}),
+					}),
+					fake.WithOfferings(cloudprovider.Offering{
+						Available: true,
+						Requirements: pscheduling.NewLabelRequirements(map[string]string{
+							v1.CapacityTypeLabelKey:  v1.CapacityTypeOnDemand,
+							corev1.LabelTopologyZone: "test-zone-1a",
+						}),
+						Price: 1.00,
+					}),
+				),
 			}
 			ExpectApplied(ctx, env.Client, nodePool)
 			pod := test.UnschedulablePod(
@@ -2051,7 +2043,7 @@ var _ = Context("Scheduling", func() {
 						return []string{o.(*corev1.Pod).Spec.NodeName}
 					},
 				).Build()
-				provisioner := provisioning.NewProvisioner(kubeClient, events.NewRecorder(&record.FakeRecorder{}), cloudProvider, cluster, env.Clock)
+				provisioner := provisioning.NewProvisioner(kubeClient, events.NewRecorder(&record.FakeRecorder{}), cloudProvider, cluster, env.Clock, deviceallocation.NewController(kubeClient))
 				controller := informer.NewNodeController(kubeClient, cluster)
 				// We try to provision a node for an initial unschedulable pod that will create nodeClaim and node bindings
 				ExpectApplied(ctx, kubeClient, nodePool)
@@ -2239,8 +2231,8 @@ var _ = Context("Scheduling", func() {
 					Kind:               "DaemonSet",
 					Name:               ds.Name,
 					UID:                ds.UID,
-					Controller:         lo.ToPtr(true),
-					BlockOwnerDeletion: lo.ToPtr(true),
+					Controller:         new(true),
+					BlockOwnerDeletion: new(true),
 				})
 
 				// delete the pod so that the node is empty
@@ -2325,8 +2317,8 @@ var _ = Context("Scheduling", func() {
 					Kind:               "DaemonSet",
 					Name:               ds1.Name,
 					UID:                ds1.UID,
-					Controller:         lo.ToPtr(true),
-					BlockOwnerDeletion: lo.ToPtr(true),
+					Controller:         new(true),
+					BlockOwnerDeletion: new(true),
 				})
 
 				// delete the pod so that the node is empty
@@ -2367,19 +2359,143 @@ var _ = Context("Scheduling", func() {
 				// must create a new node
 				Expect(node1.Name).ToNot(Equal(node2.Name))
 			})
+			It("Should properly handle DaemonSet resources with Node Affinity for `karpenter.sh/initialized` and `karpenter.sh/registered`", func() {
 
+				// This test verifies that when DaemonSets are configured with node affinity for the "karpenter.sh/initialized"
+				// and "karpenter.sh/registered" labels, nodes are launched with properly calculated
+				// daemonOverhead. (Issue #2116)
+
+				// Daemonset with node affinity for `karpenter.sh/initialized`
+				ds1 := test.DaemonSet(
+					test.DaemonSetOptions{
+						PodOptions: test.PodOptions{
+							NodeRequirements: []corev1.NodeSelectorRequirement{
+								{
+									Key:      v1.NodeInitializedLabelKey,
+									Operator: corev1.NodeSelectorOpIn,
+									Values:   []string{"true"},
+								},
+							},
+							ResourceRequirements: corev1.ResourceRequirements{Requests: corev1.ResourceList{
+								corev1.ResourceCPU: resource.MustParse("1"),
+							}},
+						},
+					},
+				)
+				ExpectApplied(ctx, env.Client, nodePool, ds1)
+				Expect(env.Client.Get(ctx, client.ObjectKeyFromObject(ds1), ds1)).To(Succeed())
+
+				// Daemonset with node affinity for `karpenter.sh/registered`
+				ds2 := test.DaemonSet(
+					test.DaemonSetOptions{
+						PodOptions: test.PodOptions{
+							NodeRequirements: []corev1.NodeSelectorRequirement{
+								{
+									Key:      v1.NodeRegisteredLabelKey,
+									Operator: corev1.NodeSelectorOpIn,
+									Values:   []string{"true"},
+								},
+							},
+							ResourceRequirements: corev1.ResourceRequirements{Requests: corev1.ResourceList{
+								corev1.ResourceCPU: resource.MustParse("1"),
+							}},
+						},
+					},
+				)
+				ExpectApplied(ctx, env.Client, nodePool, ds2)
+				Expect(env.Client.Get(ctx, client.ObjectKeyFromObject(ds2), ds2)).To(Succeed())
+
+				opts := test.PodOptions{ResourceRequirements: corev1.ResourceRequirements{
+					Limits: map[corev1.ResourceName]resource.Quantity{
+						corev1.ResourceCPU: resource.MustParse("2"),
+					},
+				}}
+				initialPod := test.UnschedulablePod(opts)
+				ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, initialPod)
+				node1 := ExpectScheduled(ctx, env.Client, initialPod)
+
+				// Verify simulation-only requirements don't leak into the created NodeClaim
+				Expect(cloudProvider.CreateCalls).To(HaveLen(1))
+				createdNodeClaim := cloudProvider.CreateCalls[0]
+				reqs := pscheduling.NewNodeSelectorRequirementsWithMinValues(createdNodeClaim.Spec.Requirements...)
+				Expect(reqs).ToNot(HaveKey(v1.NodeRegisteredLabelKey))
+				Expect(reqs).ToNot(HaveKey(v1.NodeInitializedLabelKey))
+				Expect(createdNodeClaim.Labels).ToNot(HaveKey(v1.NodeRegisteredLabelKey))
+				Expect(createdNodeClaim.Labels).ToNot(HaveKey(v1.NodeInitializedLabelKey))
+
+				// create our daemonset pod and manually bind it to the node
+				ds1Pod := test.UnschedulablePod(test.PodOptions{
+					ResourceRequirements: corev1.ResourceRequirements{
+						Requests: map[corev1.ResourceName]resource.Quantity{
+							corev1.ResourceCPU: resource.MustParse("1"),
+						}},
+				})
+				ds1Pod.OwnerReferences = append(ds1Pod.OwnerReferences, metav1.OwnerReference{
+					APIVersion:         "apps/v1",
+					Kind:               "DaemonSet",
+					Name:               ds1.Name,
+					UID:                ds1.UID,
+					Controller:         lo.ToPtr(true),
+					BlockOwnerDeletion: lo.ToPtr(true),
+				})
+				ExpectApplied(ctx, env.Client, nodePool, ds1Pod)
+
+				ds2Pod := test.UnschedulablePod(test.PodOptions{
+					ResourceRequirements: corev1.ResourceRequirements{
+						Requests: map[corev1.ResourceName]resource.Quantity{
+							corev1.ResourceCPU: resource.MustParse("1"),
+						}},
+				})
+				ds2Pod.OwnerReferences = append(ds2Pod.OwnerReferences, metav1.OwnerReference{
+					APIVersion:         "apps/v1",
+					Kind:               "DaemonSet",
+					Name:               ds2.Name,
+					UID:                ds2.UID,
+					Controller:         lo.ToPtr(true),
+					BlockOwnerDeletion: lo.ToPtr(true),
+				})
+				ExpectApplied(ctx, env.Client, nodePool, ds2Pod)
+
+				// delete the pod so that the node is empty
+				ExpectDeleted(ctx, env.Client, initialPod)
+				ExpectReconcileSucceeded(ctx, nodeStateController, client.ObjectKeyFromObject(node1))
+
+				for n := range cluster.Nodes() {
+					dsRequests := n.DaemonSetRequests()
+					available := n.Available()
+					Expect(dsRequests.Cpu().AsApproximateFloat64()).To(BeNumerically("~", 0))
+					// When daemonOverhead is considered for both ds1 and ds2, a 16 CPU Node is launched,
+					// whereas when only one or neither is considered, only a 4 CPU Node is launched.
+					// no pods so we have the full (16 cpu - 100m overhead)
+					Expect(available.Cpu().AsApproximateFloat64()).To(BeNumerically("~", 15.9))
+				}
+
+				// manually bind the daemonset pods to the node
+				ExpectManualBinding(ctx, env.Client, ds1Pod, node1)
+				ExpectReconcileSucceeded(ctx, podStateController, client.ObjectKeyFromObject(ds1Pod))
+
+				ExpectManualBinding(ctx, env.Client, ds2Pod, node1)
+				ExpectReconcileSucceeded(ctx, podStateController, client.ObjectKeyFromObject(ds2Pod))
+
+				for n := range cluster.Nodes() {
+					dsRequests := n.DaemonSetRequests()
+					available := n.Available()
+					Expect(dsRequests.Cpu().AsApproximateFloat64()).To(BeNumerically("~", 2))
+					// only the DS pods are bound, so available is reduced by two and the DS requested is incremented by two
+					Expect(available.Cpu().AsApproximateFloat64()).To(BeNumerically("~", 13.9))
+				}
+			})
 		})
 		// nolint:gosec
 		It("should pack in-flight nodes before launching new nodes", func() {
 			cloudProvider.InstanceTypes = []*cloudprovider.InstanceType{
-				fake.NewInstanceType(fake.InstanceTypeOptions{
-					Name: "medium",
-					Resources: corev1.ResourceList{
+				fake.NewInstanceType("medium",
+					fake.WithResources(corev1.ResourceList{
 						// enough CPU for four pods + a bit of overhead
 						corev1.ResourceCPU:  resource.MustParse("4.25"),
 						corev1.ResourcePods: resource.MustParse("4"),
-					},
-				}),
+					}),
+				),
 			}
 			opts := test.PodOptions{ResourceRequirements: corev1.ResourceRequirements{
 				Limits: map[corev1.ResourceName]resource.Quantity{
@@ -2773,14 +2889,12 @@ var _ = Context("Scheduling", func() {
 	Describe("VolumeUsage", func() {
 		BeforeEach(func() {
 			cloudProvider.InstanceTypes = []*cloudprovider.InstanceType{
-				fake.NewInstanceType(
-					fake.InstanceTypeOptions{
-						Name: "instance-type",
-						Resources: map[corev1.ResourceName]resource.Quantity{
-							corev1.ResourceCPU:  resource.MustParse("1024"),
-							corev1.ResourcePods: resource.MustParse("1024"),
-						},
+				fake.NewInstanceType("instance-type",
+					fake.WithResources(map[corev1.ResourceName]resource.Quantity{
+						corev1.ResourceCPU:  resource.MustParse("1024"),
+						corev1.ResourcePods: resource.MustParse("1024"),
 					}),
+				),
 			}
 			nodePool.Spec.Limits = nil
 		})
@@ -2799,7 +2913,7 @@ var _ = Context("Scheduling", func() {
 							Name:   csiProvider,
 							NodeID: "fake-node-id",
 							Allocatable: &storagev1.VolumeNodeResources{
-								Count: lo.ToPtr(int32(10)),
+								Count: new(int32(10)),
 							},
 						},
 					},
@@ -2810,7 +2924,7 @@ var _ = Context("Scheduling", func() {
 
 			sc := test.StorageClass(test.StorageClassOptions{
 				ObjectMeta:        metav1.ObjectMeta{Name: "my-storage-class"},
-				Provisioner:       lo.ToPtr(csiProvider),
+				Provisioner:       new(csiProvider),
 				VolumeBindingMode: lo.ToPtr(storagev1.VolumeBindingWaitForFirstConsumer),
 				Zones:             []string{"test-zone-1"}})
 			ExpectApplied(ctx, env.Client, sc)
@@ -2818,11 +2932,11 @@ var _ = Context("Scheduling", func() {
 			var pods []*corev1.Pod
 			for i := range 6 {
 				pvcA := test.PersistentVolumeClaim(test.PersistentVolumeClaimOptions{
-					StorageClassName: lo.ToPtr("my-storage-class"),
+					StorageClassName: new("my-storage-class"),
 					ObjectMeta:       metav1.ObjectMeta{Name: fmt.Sprintf("my-claim-a-%d", i)},
 				})
 				pvcB := test.PersistentVolumeClaim(test.PersistentVolumeClaimOptions{
-					StorageClassName: lo.ToPtr("my-storage-class"),
+					StorageClassName: new("my-storage-class"),
 					ObjectMeta:       metav1.ObjectMeta{Name: fmt.Sprintf("my-claim-b-%d", i)},
 				})
 				ExpectApplied(ctx, env.Client, pvcA, pvcB)
@@ -2851,7 +2965,7 @@ var _ = Context("Scheduling", func() {
 							Name:   csiProvider,
 							NodeID: "fake-node-id",
 							Allocatable: &storagev1.VolumeNodeResources{
-								Count: lo.ToPtr(int32(10)),
+								Count: new(int32(10)),
 							},
 						},
 					},
@@ -2862,7 +2976,7 @@ var _ = Context("Scheduling", func() {
 
 			sc := test.StorageClass(test.StorageClassOptions{
 				ObjectMeta:  metav1.ObjectMeta{Name: "my-storage-class"},
-				Provisioner: lo.ToPtr(csiProvider),
+				Provisioner: new(csiProvider),
 				Zones:       []string{"test-zone-1"}})
 			ExpectApplied(ctx, env.Client, sc)
 
@@ -2872,7 +2986,7 @@ var _ = Context("Scheduling", func() {
 
 			pvc := test.PersistentVolumeClaim(test.PersistentVolumeClaimOptions{
 				ObjectMeta:       metav1.ObjectMeta{Name: "my-claim"},
-				StorageClassName: lo.ToPtr("my-storage-class"),
+				StorageClassName: new("my-storage-class"),
 				VolumeName:       pv.Name,
 			})
 			ExpectApplied(ctx, env.Client, pv, pvc)
@@ -2910,7 +3024,7 @@ var _ = Context("Scheduling", func() {
 			pvc := test.PersistentVolumeClaim(test.PersistentVolumeClaimOptions{
 				ObjectMeta:       metav1.ObjectMeta{Name: "my-claim"},
 				VolumeName:       pv.Name,
-				StorageClassName: lo.ToPtr(""),
+				StorageClassName: new(""),
 			})
 			ExpectApplied(ctx, env.Client, pv, pvc)
 
@@ -3016,7 +3130,7 @@ var _ = Context("Scheduling", func() {
 			for i := range 2 {
 				pvc := test.PersistentVolumeClaim(test.PersistentVolumeClaimOptions{
 					ObjectMeta:       metav1.ObjectMeta{Name: fmt.Sprintf("multi-zone-pvc-%d", i)},
-					StorageClassName: lo.ToPtr(sc.Name),
+					StorageClassName: new(sc.Name),
 				})
 				ExpectApplied(ctx, env.Client, pvc)
 
@@ -3067,11 +3181,11 @@ var _ = Context("Scheduling", func() {
 			})
 			pvcA := test.PersistentVolumeClaim(test.PersistentVolumeClaimOptions{
 				ObjectMeta:       metav1.ObjectMeta{Name: "pruned-overlap-pvc-a"},
-				StorageClassName: lo.ToPtr(scA.Name),
+				StorageClassName: new(scA.Name),
 			})
 			pvcB := test.PersistentVolumeClaim(test.PersistentVolumeClaimOptions{
 				ObjectMeta:       metav1.ObjectMeta{Name: "pruned-overlap-pvc-b"},
-				StorageClassName: lo.ToPtr(scB.Name),
+				StorageClassName: new(scB.Name),
 			})
 			pod := test.UnschedulablePod(test.PodOptions{
 				ObjectMeta:             metav1.ObjectMeta{Name: "pruned-overlap-pod"},
@@ -3091,7 +3205,7 @@ var _ = Context("Scheduling", func() {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "my-storage-class",
 				},
-				Provisioner:       lo.ToPtr(csiProvider),
+				Provisioner:       new(csiProvider),
 				VolumeBindingMode: lo.ToPtr(storagev1.VolumeBindingWaitForFirstConsumer),
 				Zones:             []string{"test-zone-1"}})
 			// Create another default storage class that shouldn't be used and has no associated limits
@@ -3102,7 +3216,7 @@ var _ = Context("Scheduling", func() {
 						isDefaultStorageClassAnnotation: "true",
 					},
 				},
-				Provisioner:       lo.ToPtr("other-provider"),
+				Provisioner:       new("other-provider"),
 				VolumeBindingMode: lo.ToPtr(storagev1.VolumeBindingWaitForFirstConsumer),
 				Zones:             []string{"test-zone-1"}})
 
@@ -3115,7 +3229,7 @@ var _ = Context("Scheduling", func() {
 					Ephemeral: &corev1.EphemeralVolumeSource{
 						VolumeClaimTemplate: &corev1.PersistentVolumeClaimTemplate{
 							Spec: corev1.PersistentVolumeClaimSpec{
-								StorageClassName: lo.ToPtr(sc.Name),
+								StorageClassName: new(sc.Name),
 								AccessModes: []corev1.PersistentVolumeAccessMode{
 									corev1.ReadWriteOnce,
 								},
@@ -3134,7 +3248,7 @@ var _ = Context("Scheduling", func() {
 					Namespace: initialPod.Namespace,
 					Name:      fmt.Sprintf("%s-%s", initialPod.Name, volumeName),
 				},
-				StorageClassName: lo.ToPtr(sc.Name),
+				StorageClassName: new(sc.Name),
 			})
 			ExpectApplied(ctx, env.Client, nodePool, sc, sc2, pvc, initialPod)
 			ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, initialPod)
@@ -3149,14 +3263,14 @@ var _ = Context("Scheduling", func() {
 							Name:   csiProvider,
 							NodeID: "fake-node-id",
 							Allocatable: &storagev1.VolumeNodeResources{
-								Count: lo.ToPtr(int32(1)),
+								Count: new(int32(1)),
 							},
 						},
 						{
 							Name:   "other-provider",
 							NodeID: "fake-node-id",
 							Allocatable: &storagev1.VolumeNodeResources{
-								Count: lo.ToPtr(int32(10)),
+								Count: new(int32(10)),
 							},
 						},
 					},
@@ -3173,7 +3287,7 @@ var _ = Context("Scheduling", func() {
 					Ephemeral: &corev1.EphemeralVolumeSource{
 						VolumeClaimTemplate: &corev1.PersistentVolumeClaimTemplate{
 							Spec: corev1.PersistentVolumeClaimSpec{
-								StorageClassName: lo.ToPtr(sc.Name),
+								StorageClassName: new(sc.Name),
 								AccessModes: []corev1.PersistentVolumeAccessMode{
 									corev1.ReadWriteOnce,
 								},
@@ -3192,7 +3306,7 @@ var _ = Context("Scheduling", func() {
 					Namespace: pod.Namespace,
 					Name:      fmt.Sprintf("%s-%s", pod.Name, volumeName),
 				},
-				StorageClassName: lo.ToPtr(sc.Name),
+				StorageClassName: new(sc.Name),
 			})
 			ExpectApplied(ctx, env.Client, nodePool, pvc, pod)
 			ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pod)
@@ -3208,7 +3322,7 @@ var _ = Context("Scheduling", func() {
 						isDefaultStorageClassAnnotation: "true",
 					},
 				},
-				Provisioner:       lo.ToPtr(csiProvider),
+				Provisioner:       new(csiProvider),
 				VolumeBindingMode: lo.ToPtr(storagev1.VolumeBindingWaitForFirstConsumer),
 				Zones:             []string{"test-zone-1"}})
 
@@ -3253,7 +3367,7 @@ var _ = Context("Scheduling", func() {
 							Name:   csiProvider,
 							NodeID: "fake-node-id",
 							Allocatable: &storagev1.VolumeNodeResources{
-								Count: lo.ToPtr(int32(1)),
+								Count: new(int32(1)),
 							},
 						},
 					},
@@ -3307,7 +3421,7 @@ var _ = Context("Scheduling", func() {
 						isDefaultStorageClassAnnotation: "true",
 					},
 				},
-				Provisioner:       lo.ToPtr("other-provider"),
+				Provisioner:       new("other-provider"),
 				VolumeBindingMode: lo.ToPtr(storagev1.VolumeBindingWaitForFirstConsumer),
 				Zones:             []string{"test-zone-1"}})
 			sc2 := test.StorageClass(test.StorageClassOptions{
@@ -3317,7 +3431,7 @@ var _ = Context("Scheduling", func() {
 						isDefaultStorageClassAnnotation: "true",
 					},
 				},
-				Provisioner:       lo.ToPtr(csiProvider),
+				Provisioner:       new(csiProvider),
 				VolumeBindingMode: lo.ToPtr(storagev1.VolumeBindingWaitForFirstConsumer),
 				Zones:             []string{"test-zone-1"}})
 
@@ -3367,14 +3481,14 @@ var _ = Context("Scheduling", func() {
 							Name:   csiProvider,
 							NodeID: "fake-node-id",
 							Allocatable: &storagev1.VolumeNodeResources{
-								Count: lo.ToPtr(int32(1)),
+								Count: new(int32(1)),
 							},
 						},
 						{
 							Name:   "other-provider",
 							NodeID: "fake-node-id",
 							Allocatable: &storagev1.VolumeNodeResources{
-								Count: lo.ToPtr(int32(10)),
+								Count: new(int32(10)),
 							},
 						},
 					},
@@ -3425,7 +3539,7 @@ var _ = Context("Scheduling", func() {
 						isDefaultStorageClassAnnotation: "true",
 					},
 				},
-				Provisioner: lo.ToPtr("other-provider"),
+				Provisioner: new("other-provider"),
 				Zones:       []string{"test-zone-1"}})
 
 			ExpectApplied(ctx, env.Client, sc)
@@ -3456,7 +3570,7 @@ var _ = Context("Scheduling", func() {
 					Namespace: pod.Namespace,
 					Name:      fmt.Sprintf("%s-%s", pod.Name, volumeName),
 				},
-				StorageClassName: lo.ToPtr(sc.Name),
+				StorageClassName: new(sc.Name),
 			})
 
 			ExpectApplied(ctx, env.Client, nodePool, pvc, pod)
@@ -3534,7 +3648,7 @@ var _ = Context("Scheduling", func() {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "tmp-ephemeral",
 				},
-				StorageClassName: lo.ToPtr(sc.Name),
+				StorageClassName: new(sc.Name),
 			})
 			pod := test.UnschedulablePod(test.PodOptions{
 				PersistentVolumeClaims: []string{pvc.Name},
@@ -3548,7 +3662,7 @@ var _ = Context("Scheduling", func() {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "default-storage-class",
 				},
-				Provisioner:       lo.ToPtr("other-provider"),
+				Provisioner:       new("other-provider"),
 				VolumeBindingMode: lo.ToPtr(storagev1.VolumeBindingImmediate),
 				Zones:             []string{"test-zone-1"}},
 			)
@@ -3556,7 +3670,7 @@ var _ = Context("Scheduling", func() {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "tmp-ephemeral",
 				},
-				StorageClassName: lo.ToPtr(sc.Name),
+				StorageClassName: new(sc.Name),
 			})
 			pod := test.UnschedulablePod(test.PodOptions{
 				PersistentVolumeClaims: []string{pvc.Name},
@@ -3570,7 +3684,7 @@ var _ = Context("Scheduling", func() {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "default-storage-class",
 				},
-				Provisioner:       lo.ToPtr("other-provider"),
+				Provisioner:       new("other-provider"),
 				VolumeBindingMode: lo.ToPtr(storagev1.VolumeBindingWaitForFirstConsumer),
 				Zones:             []string{"test-zone-1"}},
 			)
@@ -3578,7 +3692,7 @@ var _ = Context("Scheduling", func() {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "tmp-ephemeral",
 				},
-				StorageClassName: lo.ToPtr(sc.Name),
+				StorageClassName: new(sc.Name),
 			})
 			pod := test.UnschedulablePod(test.PodOptions{
 				PersistentVolumeClaims: []string{pvc.Name},
@@ -3635,7 +3749,7 @@ var _ = Context("Scheduling", func() {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "default-storage-class",
 				},
-				Provisioner:       lo.ToPtr("other-provider"),
+				Provisioner:       new("other-provider"),
 				VolumeBindingMode: lo.ToPtr(storagev1.VolumeBindingWaitForFirstConsumer),
 				Zones:             []string{"test-zone-1"}},
 			)
@@ -3643,7 +3757,7 @@ var _ = Context("Scheduling", func() {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "tmp-ephemeral",
 				},
-				StorageClassName: lo.ToPtr(sc.Name),
+				StorageClassName: new(sc.Name),
 			})
 			pvc.Status.Phase = corev1.ClaimLost
 			pod := test.UnschedulablePod(test.PodOptions{
@@ -3659,7 +3773,7 @@ var _ = Context("Scheduling", func() {
 					ObjectMeta: metav1.ObjectMeta{
 						Name: "default-storage-class",
 					},
-					Provisioner: lo.ToPtr("other-provider"),
+					Provisioner: new("other-provider"),
 					// VolumeBindingMode doesn't actually matter when volumeName is defined
 					VolumeBindingMode: lo.ToPtr(storagev1.VolumeBindingWaitForFirstConsumer),
 					Zones:             []string{"test-zone-1"}},
@@ -3672,7 +3786,7 @@ var _ = Context("Scheduling", func() {
 						Name: "tmp-ephemeral",
 					},
 					VolumeName:       pv.Name,
-					StorageClassName: lo.ToPtr(sc.Name),
+					StorageClassName: new(sc.Name),
 				})
 				if !isAnnotationPresent {
 					delete(pvc.Annotations, "pv.kubernetes.io/bind-completed")
@@ -3703,7 +3817,7 @@ var _ = Context("Scheduling", func() {
 						Ephemeral: &corev1.EphemeralVolumeSource{
 							VolumeClaimTemplate: &corev1.PersistentVolumeClaimTemplate{
 								Spec: corev1.PersistentVolumeClaimSpec{
-									StorageClassName: lo.ToPtr(storageClassName),
+									StorageClassName: new(storageClassName),
 									AccessModes: []corev1.PersistentVolumeAccessMode{
 										corev1.ReadWriteOnce,
 									},
@@ -3723,7 +3837,7 @@ var _ = Context("Scheduling", func() {
 						Namespace: pod.Namespace,
 						Name:      fmt.Sprintf("%s-%s", pod.Name, volumeName),
 					},
-					StorageClassName: lo.ToPtr(storageClassName),
+					StorageClassName: new(storageClassName),
 					VolumeName:       pvName,
 				})
 				pv := test.PersistentVolume(test.PersistentVolumeOptions{
@@ -3754,7 +3868,7 @@ var _ = Context("Scheduling", func() {
 						Ephemeral: &corev1.EphemeralVolumeSource{
 							VolumeClaimTemplate: &corev1.PersistentVolumeClaimTemplate{
 								Spec: corev1.PersistentVolumeClaimSpec{
-									StorageClassName: lo.ToPtr(storageClassName),
+									StorageClassName: new(storageClassName),
 									AccessModes: []corev1.PersistentVolumeAccessMode{
 										corev1.ReadWriteOnce,
 									},
@@ -3794,7 +3908,7 @@ var _ = Context("Scheduling", func() {
 					VolumeBindingMode: lo.ToPtr(storagev1.VolumeBindingWaitForFirstConsumer),
 					Zones:             []string{"test-zone-1"}})
 				pvc := test.PersistentVolumeClaim(test.PersistentVolumeClaimOptions{
-					StorageClassName: lo.ToPtr(sc.Name),
+					StorageClassName: new(sc.Name),
 				})
 				ExpectApplied(ctx, env.Client, nodePool, sc, pvc)
 				initialPod := test.UnschedulablePod(test.PodOptions{
@@ -3812,7 +3926,7 @@ var _ = Context("Scheduling", func() {
 								Name:   plugins.AWSEBSDriverName,
 								NodeID: "fake-node-id",
 								Allocatable: &storagev1.VolumeNodeResources{
-									Count: lo.ToPtr(int32(1)),
+									Count: new(int32(1)),
 								},
 							},
 						},
@@ -3829,7 +3943,7 @@ var _ = Context("Scheduling", func() {
 				ExpectReconcileSucceeded(ctx, nodeStateController, client.ObjectKeyFromObject(node))
 
 				pvc2 := test.PersistentVolumeClaim(test.PersistentVolumeClaimOptions{
-					StorageClassName: lo.ToPtr(sc.Name),
+					StorageClassName: new(sc.Name),
 				})
 				pod := test.UnschedulablePod(test.PodOptions{
 					PersistentVolumeClaims: []string{pvc2.Name},
@@ -3870,7 +3984,7 @@ var _ = Context("Scheduling", func() {
 											corev1.ResourceStorage: resource.MustParse("1Gi"),
 										},
 									},
-									StorageClassName: lo.ToPtr(sc.Name),
+									StorageClassName: new(sc.Name),
 								},
 							},
 						},
@@ -3895,7 +4009,7 @@ var _ = Context("Scheduling", func() {
 								Name:   plugins.AWSEBSDriverName,
 								NodeID: "fake-node-id",
 								Allocatable: &storagev1.VolumeNodeResources{
-									Count: lo.ToPtr(int32(1)),
+									Count: new(int32(1)),
 								},
 							},
 						},
@@ -3920,7 +4034,7 @@ var _ = Context("Scheduling", func() {
 											corev1.ResourceStorage: resource.MustParse("1Gi"),
 										},
 									},
-									StorageClassName: lo.ToPtr(sc.Name),
+									StorageClassName: new(sc.Name),
 								},
 							},
 						},
@@ -4008,8 +4122,8 @@ var _ = Context("Scheduling", func() {
 								Kind:               "DaemonSet",
 								Name:               ds.Name,
 								UID:                ds.UID,
-								Controller:         lo.ToPtr(true),
-								BlockOwnerDeletion: lo.ToPtr(true),
+								Controller:         new(true),
+								BlockOwnerDeletion: new(true),
 							},
 						},
 					},
@@ -4065,8 +4179,8 @@ var _ = Context("Scheduling", func() {
 								Kind:               "ReplicaSet",
 								Name:               rs.Name,
 								UID:                rs.UID,
-								Controller:         lo.ToPtr(true),
-								BlockOwnerDeletion: lo.ToPtr(true),
+								Controller:         new(true),
+								BlockOwnerDeletion: new(true),
 							},
 						},
 					},
@@ -4109,8 +4223,8 @@ var _ = Context("Scheduling", func() {
 								Kind:               "StatefulSet",
 								Name:               ss.Name,
 								UID:                ss.UID,
-								Controller:         lo.ToPtr(true),
-								BlockOwnerDeletion: lo.ToPtr(true),
+								Controller:         new(true),
+								BlockOwnerDeletion: new(true),
 							},
 						},
 					},
@@ -4173,26 +4287,26 @@ var _ = Context("Scheduling", func() {
 			},
 			Entry("0 max unavailable", test.PodDisruptionBudget(test.PDBOptions{
 				Labels:         podLabels,
-				MaxUnavailable: lo.ToPtr(intstr.FromInt(0)),
+				MaxUnavailable: new(intstr.FromInt(0)),
 			})),
 			Entry("0% max unavailable", test.PodDisruptionBudget(test.PDBOptions{
 				Labels:         podLabels,
-				MaxUnavailable: lo.ToPtr(intstr.FromString("0%")),
+				MaxUnavailable: new(intstr.FromString("0%")),
 			})),
 			Entry("100% min available", test.PodDisruptionBudget(test.PDBOptions{
 				Labels:       podLabels,
-				MinAvailable: lo.ToPtr(intstr.FromString("100%")),
+				MinAvailable: new(intstr.FromString("100%")),
 			})),
 			Entry("multiple PDBs on the same pod",
 				test.PodDisruptionBudget(test.PDBOptions{
 					ObjectMeta:   metav1.ObjectMeta{Name: "pdb-1"},
 					Labels:       podLabels,
-					MinAvailable: lo.ToPtr(intstr.FromString("100%")),
+					MinAvailable: new(intstr.FromString("100%")),
 				}),
 				test.PodDisruptionBudget(test.PDBOptions{
 					ObjectMeta:   metav1.ObjectMeta{Name: "pdb-2"},
 					Labels:       podLabels,
-					MinAvailable: lo.ToPtr(intstr.FromString("100%")),
+					MinAvailable: new(intstr.FromString("100%")),
 				}),
 			),
 		)
@@ -4217,7 +4331,7 @@ var _ = Context("Scheduling", func() {
 					},
 				},
 			}) // Create 1000 pods which should take long enough to schedule that we should be able to read the queueDepth metric with a value
-			s, err := prov.NewScheduler(ctx, pods, nil, scheduling.DisableReservedCapacityFallback)
+			s, err := prov.NewScheduler(ctx, pods, nil, nil, scheduling.DisableReservedCapacityFallback)
 			Expect(err).To(BeNil())
 
 			var wg sync.WaitGroup
@@ -4289,7 +4403,7 @@ var _ = Context("Scheduling", func() {
 					},
 				},
 			}) // Create 1000 pods which should take long enough to schedule that we should be able to read the queueDepth metric with a value
-			s, err := prov.NewScheduler(ctx, pods, nil, scheduling.DisableReservedCapacityFallback)
+			s, err := prov.NewScheduler(ctx, pods, nil, nil, scheduling.DisableReservedCapacityFallback)
 			Expect(err).To(BeNil())
 			_, err = s.Solve(injection.WithControllerName(ctx, "provisioner"), pods)
 			Expect(err).To(BeNil())
@@ -4561,27 +4675,24 @@ var _ = Context("Scheduling", func() {
 		BeforeEach(func() {
 			cloudProvider.Reset()
 			cloudProvider.InstanceTypes = []*cloudprovider.InstanceType{
-				fake.NewInstanceType(fake.InstanceTypeOptions{
-					Name: "large-instance-type",
-					Resources: map[corev1.ResourceName]resource.Quantity{
+				fake.NewInstanceType("large-instance-type",
+					fake.WithResources(map[corev1.ResourceName]resource.Quantity{
 						corev1.ResourceCPU:    resource.MustParse("6"),
 						corev1.ResourceMemory: resource.MustParse("6Gi"),
-					},
-				}),
-				fake.NewInstanceType(fake.InstanceTypeOptions{
-					Name: "medium-instance-type",
-					Resources: map[corev1.ResourceName]resource.Quantity{
+					}),
+				),
+				fake.NewInstanceType("medium-instance-type",
+					fake.WithResources(map[corev1.ResourceName]resource.Quantity{
 						corev1.ResourceCPU:    resource.MustParse("3"),
 						corev1.ResourceMemory: resource.MustParse("3Gi"),
-					},
-				}),
-				fake.NewInstanceType(fake.InstanceTypeOptions{
-					Name: "small-instance-type",
-					Resources: map[corev1.ResourceName]resource.Quantity{
+					}),
+				),
+				fake.NewInstanceType("small-instance-type",
+					fake.WithResources(map[corev1.ResourceName]resource.Quantity{
 						corev1.ResourceCPU:    resource.MustParse("2"),
 						corev1.ResourceMemory: resource.MustParse("2Gi"),
-					},
-				}),
+					}),
+				),
 			}
 			reservedInstanceTypes := []*cloudprovider.InstanceType{cloudProvider.InstanceTypes[1], cloudProvider.InstanceTypes[2]}
 			for _, it := range reservedInstanceTypes {
@@ -4597,7 +4708,7 @@ var _ = Context("Scheduling", func() {
 					Price: fake.PriceFromResources(it.Capacity) / 100_000.0,
 				})
 			}
-			ctx = options.ToContext(ctx, test.Options(test.OptionsFields{FeatureGates: test.FeatureGates{ReservedCapacity: lo.ToPtr(true)}}))
+			ctx = options.ToContext(ctx, test.Options(test.OptionsFields{FeatureGates: test.FeatureGates{ReservedCapacity: new(true)}}))
 		})
 		It("shouldn't fallback to on-demand or spot when compatible reserved offerings are available", func() {
 			// With the pessimistic nature of scheduling reservations, we'll only be able to provision one instance per loop if a
@@ -4620,8 +4731,8 @@ var _ = Context("Scheduling", func() {
 			// can't schedule all three because we don't know what instance type will be selected in the launch flow, so the
 			// single nodeclaim reserves both the small and medium offerings.
 			bindings := ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pods...)
-			Expect(len(bindings)).To(Equal(1))
-			node := lo.Values(bindings)[0].Node
+			Expect(len(bindings.Bindings)).To(Equal(1))
+			node := lo.Values(bindings.Bindings)[0].Node
 			Expect(node.Labels).To(HaveKeyWithValue(cloudprovider.ReservationIDLabel, "r-small-instance-type"))
 			Expect(node.Labels).To(HaveKeyWithValue(v1.CapacityTypeLabelKey, v1.CapacityTypeReserved))
 			Expect(node.Labels).To(HaveKeyWithValue(corev1.LabelInstanceTypeStable, "small-instance-type"))
@@ -4632,8 +4743,8 @@ var _ = Context("Scheduling", func() {
 
 			// Again, we'll only be able to schedule a single pod
 			bindings = ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pods...)
-			Expect(len(bindings)).To(Equal(1))
-			node = lo.Values(bindings)[0].Node
+			Expect(len(bindings.Bindings)).To(Equal(1))
+			node = lo.Values(bindings.Bindings)[0].Node
 			Expect(node.Labels).To(HaveKeyWithValue(cloudprovider.ReservationIDLabel, "r-medium-instance-type"))
 			Expect(node.Labels).To(HaveKeyWithValue(v1.CapacityTypeLabelKey, v1.CapacityTypeReserved))
 			Expect(node.Labels).To(HaveKeyWithValue(corev1.LabelInstanceTypeStable, "medium-instance-type"))
@@ -4645,8 +4756,8 @@ var _ = Context("Scheduling", func() {
 			// Finally, we schedule the final pod. Since both capacity reservations are now exhausted and their offerings are
 			// marked as unavailable, we will fall back to either OD or spot.
 			bindings = ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pods...)
-			Expect(len(bindings)).To(Equal(1))
-			node = lo.Values(bindings)[0].Node
+			Expect(len(bindings.Bindings)).To(Equal(1))
+			node = lo.Values(bindings.Bindings)[0].Node
 			Expect(node.Labels).ToNot(HaveKey(cloudprovider.ReservationIDLabel))
 			Expect(node.Labels).To(HaveKeyWithValue(v1.CapacityTypeLabelKey, Not(Equal(v1.CapacityTypeReserved))))
 			Expect(node.Labels).To(HaveKeyWithValue(corev1.LabelInstanceTypeStable, "small-instance-type"))
@@ -4690,8 +4801,8 @@ var _ = Context("Scheduling", func() {
 			// selected instance type. Karpenter should successfully provision a reserved instance for one pod, but fail
 			// to provision anything for the second since it won't fallback to OD or spot.
 			bindings := ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pods...)
-			Expect(len(bindings)).To(Equal(1))
-			node := lo.Values(bindings)[0].Node
+			Expect(len(bindings.Bindings)).To(Equal(1))
+			node := lo.Values(bindings.Bindings)[0].Node
 			Expect(node.Labels).To(HaveKeyWithValue(cloudprovider.ReservationIDLabel, "r-small-instance-type"))
 			Expect(node.Labels).To(HaveKeyWithValue(v1.CapacityTypeLabelKey, v1.CapacityTypeReserved))
 			Expect(node.Labels).To(HaveKeyWithValue(corev1.LabelInstanceTypeStable, "small-instance-type"))
@@ -4702,8 +4813,8 @@ var _ = Context("Scheduling", func() {
 				return bindings.Get(p) == nil
 			})
 			bindings = ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pods...)
-			Expect(len(bindings)).To(Equal(1))
-			node = lo.Values(bindings)[0].Node
+			Expect(len(bindings.Bindings)).To(Equal(1))
+			node = lo.Values(bindings.Bindings)[0].Node
 			Expect(node.Labels).ToNot(HaveKey(cloudprovider.ReservationIDLabel))
 			Expect(node.Labels).To(HaveKeyWithValue(v1.CapacityTypeLabelKey, Not(Equal(v1.CapacityTypeReserved))))
 			Expect(node.Labels).To(HaveKeyWithValue(corev1.LabelInstanceTypeStable, "small-instance-type"))
@@ -4717,13 +4828,12 @@ var _ = Context("Scheduling", func() {
 			// instance type. This test should verify that the scheduler treats these offerings as though they are drawing from
 			// two separate pools.
 			//cloudProvider.InstanceTypesForNodePool[nodePool.Name] = append([]*cloudprovider.InstanceType{}, cloudProvider.InstanceTypes...)
-			distinctInstanceType := fake.NewInstanceType(fake.InstanceTypeOptions{
-				Name: "small-instance-type",
-				Resources: map[corev1.ResourceName]resource.Quantity{
+			distinctInstanceType := fake.NewInstanceType("small-instance-type",
+				fake.WithResources(map[corev1.ResourceName]resource.Quantity{
 					corev1.ResourceCPU:    resource.MustParse("2"),
 					corev1.ResourceMemory: resource.MustParse("2Gi"),
-				},
-			})
+				}),
+			)
 			distinctInstanceType.Offerings = append(distinctInstanceType.Offerings, &cloudprovider.Offering{
 				ReservationCapacity: 1,
 				Available:           true,
@@ -4769,8 +4879,9 @@ var _ = Context("Scheduling", func() {
 
 			// Since each pod can only schedule to one of the NodePools, and each NodePool has a distinct capacity reservation,
 			// we should be able to schedule both pods simultaneously despite them selecting on the same instance pool.
-			bindings := lo.Values(ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pods...))
-			Expect(len(bindings)).To(Equal(2))
+			result := ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pods...)
+			Expect(len(result.Bindings)).To(Equal(2))
+			bindings := lo.Values(result.Bindings)
 			for _, binding := range bindings {
 				Expect(binding.Node.Labels).To(HaveKey(cloudprovider.ReservationIDLabel))
 				Expect(binding.Node.Labels).To(HaveKeyWithValue(v1.CapacityTypeLabelKey, v1.CapacityTypeReserved))
@@ -4826,8 +4937,8 @@ var _ = Context("Scheduling", func() {
 			// - Both instances were launched into the new reservation, leaving a single instance available in the original
 			//   reservation.
 			bindings := ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pods...)
-			Expect(len(bindings)).To(Equal(2))
-			for _, binding := range lo.Values(bindings) {
+			Expect(len(bindings.Bindings)).To(Equal(2))
+			for _, binding := range lo.Values(bindings.Bindings) {
 				Expect(binding.Node.Labels).To(HaveKey(cloudprovider.ReservationIDLabel))
 				Expect(binding.Node.Labels).To(HaveKeyWithValue(v1.CapacityTypeLabelKey, v1.CapacityTypeReserved))
 				Expect(binding.Node.Labels).To(HaveKeyWithValue(corev1.LabelInstanceTypeStable, targetInstanceType.Name))
@@ -4841,8 +4952,8 @@ var _ = Context("Scheduling", func() {
 			// any reserved offering, but due to the pessimistic algorithm, we'll still defer the remaining pod until the next
 			// simulataion.
 			bindings = ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pods...)
-			Expect(len(bindings)).To(Equal(1))
-			node := lo.Values(bindings)[0].Node
+			Expect(len(bindings.Bindings)).To(Equal(1))
+			node := lo.Values(bindings.Bindings)[0].Node
 			Expect(node.Labels).To(HaveKey(cloudprovider.ReservationIDLabel))
 			Expect(node.Labels).To(HaveKeyWithValue(v1.CapacityTypeLabelKey, v1.CapacityTypeReserved))
 			Expect(node.Labels).To(HaveKeyWithValue(corev1.LabelInstanceTypeStable, targetInstanceType.Name))
@@ -4854,8 +4965,8 @@ var _ = Context("Scheduling", func() {
 			// Finally, schedule the remaining pod. Since there are no more remaining reservations, we should expect to see the
 			// pod scheduled to non-reserved capacity.
 			bindings = ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pods...)
-			Expect(len(bindings)).To(Equal(1))
-			node = lo.Values(bindings)[0].Node
+			Expect(len(bindings.Bindings)).To(Equal(1))
+			node = lo.Values(bindings.Bindings)[0].Node
 			Expect(node.Labels).ToNot(HaveKey(cloudprovider.ReservationIDLabel))
 			Expect(node.Labels).To(HaveKeyWithValue(v1.CapacityTypeLabelKey, Not(Equal(v1.CapacityTypeReserved))))
 			Expect(node.Labels).To(HaveKeyWithValue(corev1.LabelInstanceTypeStable, targetInstanceType.Name))
@@ -4875,13 +4986,12 @@ var _ = Context("Scheduling", func() {
 			// instance type. This test should verify that the scheduler treats these offerings as though they are drawing from
 			// two separate pools.
 			//cloudProvider.InstanceTypesForNodePool[nodePool.Name] = append([]*cloudprovider.InstanceType{}, cloudProvider.InstanceTypes...)
-			targetInstanceType := fake.NewInstanceType(fake.InstanceTypeOptions{
-				Name: "small-instance-type",
-				Resources: map[corev1.ResourceName]resource.Quantity{
+			targetInstanceType := fake.NewInstanceType("small-instance-type",
+				fake.WithResources(map[corev1.ResourceName]resource.Quantity{
 					corev1.ResourceCPU:    resource.MustParse("2"),
 					corev1.ResourceMemory: resource.MustParse("2Gi"),
-				},
-			})
+				}),
+			)
 			targetInstanceType.Offerings = append(targetInstanceType.Offerings, &cloudprovider.Offering{
 				ReservationCapacity: 1,
 				Available:           true,
@@ -4924,8 +5034,8 @@ var _ = Context("Scheduling", func() {
 			// NodeClaim creation for the second pod will fail. It should fail because there is a reserved offering available
 			// in the higher weight NodePool, but a reservation can't be made in this simulation.
 			bindings := ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pods...)
-			Expect(len(bindings)).To(Equal(1))
-			node := lo.Values(bindings)[0].Node
+			Expect(len(bindings.Bindings)).To(Equal(1))
+			node := lo.Values(bindings.Bindings)[0].Node
 			Expect(node.Labels).To(HaveKey(cloudprovider.ReservationIDLabel))
 			Expect(node.Labels).To(HaveKeyWithValue(v1.CapacityTypeLabelKey, v1.CapacityTypeReserved))
 			Expect(node.Labels).To(HaveKeyWithValue(corev1.LabelInstanceTypeStable, targetInstanceType.Name))
@@ -4937,8 +5047,8 @@ var _ = Context("Scheduling", func() {
 			// After the NodeClaims were launched for the first scheduling simulation, the offering in the higher weight NodePool
 			// should have been marked as unavailable. We will now be able to schedule the second pod to the fallback nodepool.
 			bindings = ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pods...)
-			Expect(len(bindings)).To(Equal(1))
-			node = lo.Values(bindings)[0].Node
+			Expect(len(bindings.Bindings)).To(Equal(1))
+			node = lo.Values(bindings.Bindings)[0].Node
 			Expect(node.Labels).ToNot(HaveKey(cloudprovider.ReservationIDLabel))
 			Expect(node.Labels).To(HaveKeyWithValue(v1.CapacityTypeLabelKey, Not(Equal(v1.CapacityTypeReserved))))
 			Expect(node.Labels).To(HaveKeyWithValue(corev1.LabelInstanceTypeStable, targetInstanceType.Name))
@@ -4955,13 +5065,12 @@ var _ = Context("Scheduling", func() {
 			// Ensure that the offering in the other NodePool uses a different reservation. Otherwise the first pod scheduling
 			// via the first NodePool will result in all capacity for compatible offerings on both NodePools being reserved.
 			// This would produce false negatives.
-			distinctInstanceType := fake.NewInstanceType(fake.InstanceTypeOptions{
-				Name: targetInstanceTypeName,
-				Resources: map[corev1.ResourceName]resource.Quantity{
+			distinctInstanceType := fake.NewInstanceType(targetInstanceTypeName,
+				fake.WithResources(map[corev1.ResourceName]resource.Quantity{
 					corev1.ResourceCPU:    resource.MustParse("2"),
 					corev1.ResourceMemory: resource.MustParse("2Gi"),
-				},
-			})
+				}),
+			)
 			distinctInstanceType.Offerings = append(distinctInstanceType.Offerings, &cloudprovider.Offering{
 				ReservationCapacity: 1,
 				Available:           true,
@@ -5008,8 +5117,8 @@ var _ = Context("Scheduling", func() {
 			// we attempt to create a NodeClaim for the second pod, we should fail with a reserved capacity error and requeue the
 			// pod without relaxing preferences. The end result should be deferring scheduling to the next iteration.
 			bindings := ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pods...)
-			Expect(len(bindings)).To(Equal(1))
-			node := lo.Values(bindings)[0].Node
+			Expect(len(bindings.Bindings)).To(Equal(1))
+			node := lo.Values(bindings.Bindings)[0].Node
 			Expect(node.Labels).To(HaveKey(cloudprovider.ReservationIDLabel))
 			Expect(node.Labels).To(HaveKeyWithValue(v1.CapacityTypeLabelKey, v1.CapacityTypeReserved))
 			Expect(node.Labels).To(HaveKeyWithValue(corev1.LabelInstanceTypeStable, targetInstanceTypeName))
@@ -5021,8 +5130,8 @@ var _ = Context("Scheduling", func() {
 			// Retry with the remaining pod. Since the pod still has a preferred affinity for the original NodePool, we expect it
 			// to schedule there even though there is no remaining reserved capacity and there is on the other NodePool.
 			bindings = ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pods...)
-			Expect(len(bindings)).To(Equal(1))
-			node = lo.Values(bindings)[0].Node
+			Expect(len(bindings.Bindings)).To(Equal(1))
+			node = lo.Values(bindings.Bindings)[0].Node
 			Expect(node.Labels).ToNot(HaveKey(cloudprovider.ReservationIDLabel))
 			Expect(node.Labels).To(HaveKeyWithValue(v1.CapacityTypeLabelKey, Not(Equal(v1.CapacityTypeReserved))))
 			Expect(node.Labels).To(HaveKeyWithValue(corev1.LabelInstanceTypeStable, targetInstanceTypeName))
@@ -5072,9 +5181,9 @@ var _ = Context("Scheduling", func() {
 			})
 
 			bindings := ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pods...)
-			Expect(len(bindings)).To(Equal(2))
-			node := lo.Values(bindings)[0].Node
-			for _, b := range lo.Values(bindings) {
+			Expect(len(bindings.Bindings)).To(Equal(2))
+			node := lo.Values(bindings.Bindings)[0].Node
+			for _, b := range lo.Values(bindings.Bindings) {
 				Expect(b.Node.Name).To(Equal(node.Name))
 			}
 			Expect(node.Labels).To(HaveKeyWithValue(cloudprovider.ReservationIDLabel, "r-small-instance-type"))
@@ -5217,13 +5326,13 @@ var _ = Context("Scheduling", func() {
 	Describe("Dynamic Resource Allocation (DRA)", func() {
 		DescribeTable("should handle DRA pods correctly",
 			func(testCase string, podOptions test.PodOptions, expectNodeClaims bool, expectDRAError bool) {
-				nodePool := test.NodePool()
+				nodePool = test.NodePool()
 				ExpectApplied(ctx, env.Client, nodePool)
 
 				// Create the test pod with specified options
 				pod := test.Pod(podOptions)
 
-				scheduler, err := prov.NewScheduler(ctx, []*corev1.Pod{pod}, nil)
+				scheduler, err := prov.NewScheduler(ctx, []*corev1.Pod{pod}, nil, nil)
 				Expect(err).ToNot(HaveOccurred())
 				results, err := scheduler.Solve(ctx, []*corev1.Pod{pod})
 				Expect(err).ToNot(HaveOccurred())
@@ -5356,7 +5465,7 @@ var _ = Context("Scheduling", func() {
 		)
 
 		It("should handle DaemonSet pods with DRA requirements based on IgnoreDRARequests flag value", func() {
-			nodePool := test.NodePool()
+			nodePool = test.NodePool()
 			ExpectApplied(ctx, env.Client, nodePool)
 
 			// DRA daemon pod with larger CPU requirements
@@ -5380,26 +5489,26 @@ var _ = Context("Scheduling", func() {
 			})
 
 			// When IgnoreDRARequests = true (default): only appPod counts (1 CPU total)
-			ctx1 := options.ToContext(ctx, test.Options(test.OptionsFields{IgnoreDRARequests: lo.ToPtr(true)}))
+			ctx1 := options.ToContext(ctx, test.Options(test.OptionsFields{IgnoreDRARequests: new(true)}))
 			topology1, err := scheduling.NewTopology(ctx1, env.Client, cluster, nil, []*v1.NodePool{nodePool},
 				map[string][]*cloudprovider.InstanceType{nodePool.Name: cloudProvider.InstanceTypes}, []*corev1.Pod{appPod})
 			Expect(err).ToNot(HaveOccurred())
 			scheduler1 := scheduling.NewScheduler(ctx1, env.Client, []*v1.NodePool{nodePool}, cluster, nil, topology1,
 				map[string][]*cloudprovider.InstanceType{nodePool.Name: cloudProvider.InstanceTypes},
-				[]*corev1.Pod{draDaemonPod}, events.NewRecorder(&record.FakeRecorder{}), env.Clock, nil)
+				[]*corev1.Pod{draDaemonPod}, events.NewRecorder(&record.FakeRecorder{}), env.Clock, nil, nil)
 			results1, err := scheduler1.Solve(ctx1, []*corev1.Pod{appPod})
 			Expect(err).ToNot(HaveOccurred())
 			Expect(results1.NewNodeClaims).To(HaveLen(1))
 			allocatedCPU1 := results1.NewNodeClaims[0].InstanceTypeOptions[0].Capacity[corev1.ResourceCPU]
 
 			// When IgnoreDRARequests = false: both draDaemonPod + appPod count (3+1=4 CPU total)
-			ctx2 := options.ToContext(ctx, test.Options(test.OptionsFields{IgnoreDRARequests: lo.ToPtr(false)}))
+			ctx2 := options.ToContext(ctx, test.Options(test.OptionsFields{IgnoreDRARequests: new(false)}))
 			topology2, err := scheduling.NewTopology(ctx2, env.Client, cluster, nil, []*v1.NodePool{nodePool},
 				map[string][]*cloudprovider.InstanceType{nodePool.Name: cloudProvider.InstanceTypes}, []*corev1.Pod{appPod})
 			Expect(err).ToNot(HaveOccurred())
 			scheduler2 := scheduling.NewScheduler(ctx2, env.Client, []*v1.NodePool{nodePool}, cluster, nil, topology2,
 				map[string][]*cloudprovider.InstanceType{nodePool.Name: cloudProvider.InstanceTypes},
-				[]*corev1.Pod{draDaemonPod}, events.NewRecorder(&record.FakeRecorder{}), env.Clock, nil)
+				[]*corev1.Pod{draDaemonPod}, events.NewRecorder(&record.FakeRecorder{}), env.Clock, nil, nil)
 			results2, err := scheduler2.Solve(ctx2, []*corev1.Pod{appPod})
 			Expect(err).ToNot(HaveOccurred())
 			Expect(results2.NewNodeClaims).To(HaveLen(1))
@@ -5407,6 +5516,87 @@ var _ = Context("Scheduling", func() {
 
 			// Verify that when DRA is ignored, less CPU is allocated (smaller instance selected) than when DRA is counted
 			Expect(allocatedCPU1.Cmp(allocatedCPU2)).To(BeNumerically("<", 0))
+		})
+	})
+	Context("Offering Overrides", func() {
+		It("should only select instance types whose offerings have CapacityOverride when pod requests an override resource", func() {
+			extendedResource := corev1.ResourceName("test.com/extended-slots")
+			// Create instance types with default offerings
+			overrideInstanceType := fake.NewInstanceType("override-capable", fake.WithResources(corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("4"),
+				corev1.ResourceMemory: resource.MustParse("8Gi"),
+			}))
+			// Append offerings with overrides cloned from existing base offerings
+			baseOfferings := make([]*cloudprovider.Offering, len(overrideInstanceType.Offerings))
+			copy(baseOfferings, overrideInstanceType.Offerings)
+			for _, o := range baseOfferings {
+				overrideOffering := &cloudprovider.Offering{
+					Available:        o.Available,
+					Requirements:     o.Requirements,
+					Price:            o.Price,
+					CapacityOverride: corev1.ResourceList{extendedResource: resource.MustParse("4")},
+					OverheadOverride: &cloudprovider.InstanceTypeOverhead{
+						SystemReserved: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")},
+					},
+				}
+				overrideInstanceType.Offerings = append(overrideInstanceType.Offerings, overrideOffering)
+			}
+			normalInstanceType := fake.NewInstanceType("normal", fake.WithResources(corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("4"),
+				corev1.ResourceMemory: resource.MustParse("8Gi"),
+			}))
+			cloudProvider.InstanceTypes = []*cloudprovider.InstanceType{overrideInstanceType, normalInstanceType}
+			ExpectApplied(ctx, env.Client, nodePool)
+			pod := test.UnschedulablePod(test.PodOptions{
+				ResourceRequirements: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{extendedResource: resource.MustParse("1")},
+					Limits:   corev1.ResourceList{extendedResource: resource.MustParse("1")},
+				},
+			})
+			ExpectApplied(ctx, env.Client, pod)
+
+			results, _ := prov.Schedule(ctx)
+			Expect(results.NewNodeClaims).To(HaveLen(1))
+			instanceTypeNames := lo.Map(results.NewNodeClaims[0].InstanceTypeOptions, func(it *cloudprovider.InstanceType, _ int) string {
+				return it.Name
+			})
+			Expect(instanceTypeNames).To(ContainElement("override-capable"))
+			Expect(instanceTypeNames).ToNot(ContainElement("normal"))
+		})
+		It("should reject instance type when override allocatable fits but override offerings are unavailable", func() {
+			extendedResource := corev1.ResourceName("test.com/extended-slots")
+			// Create instance type with default offerings
+			overrideInstanceType := fake.NewInstanceType("override-capable", fake.WithResources(corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("4"),
+				corev1.ResourceMemory: resource.MustParse("8Gi"),
+			}))
+			// Append override offerings but mark them all as UNAVAILABLE
+			baseOfferings := make([]*cloudprovider.Offering, len(overrideInstanceType.Offerings))
+			copy(baseOfferings, overrideInstanceType.Offerings)
+			for _, o := range baseOfferings {
+				overrideInstanceType.Offerings = append(overrideInstanceType.Offerings, &cloudprovider.Offering{
+					Available:        false, // unavailable!
+					Requirements:     o.Requirements,
+					Price:            o.Price,
+					CapacityOverride: corev1.ResourceList{extendedResource: resource.MustParse("4")},
+					OverheadOverride: &cloudprovider.InstanceTypeOverhead{
+						SystemReserved: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")},
+					},
+				})
+			}
+			cloudProvider.InstanceTypes = []*cloudprovider.InstanceType{overrideInstanceType}
+			ExpectApplied(ctx, env.Client, nodePool)
+			pod := test.UnschedulablePod(test.PodOptions{
+				ResourceRequirements: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{extendedResource: resource.MustParse("1")},
+					Limits:   corev1.ResourceList{extendedResource: resource.MustParse("1")},
+				},
+			})
+			ExpectApplied(ctx, env.Client, pod)
+
+			results, _ := prov.Schedule(ctx)
+			// No NodeClaims should be created — the override allocatable fits but its offerings are unavailable
+			Expect(results.NewNodeClaims).To(HaveLen(0))
 		})
 	})
 })

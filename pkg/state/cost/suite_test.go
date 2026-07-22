@@ -23,8 +23,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samber/lo"
-
 	"github.com/awslabs/operatorpkg/object"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -310,8 +308,8 @@ var _ = Describe("ClusterCost", func() {
 							Values:   []string{testNodePool.Name},
 						},
 					},
-					PriceAdjustment: lo.ToPtr("+2.5"),
-					Weight:          lo.ToPtr(int32(10000)),
+					PriceAdjustment: new("+2.5"),
+					Weight:          new(int32(10000)),
 				},
 			})
 

@@ -98,7 +98,7 @@ var _ = Describe("Consolidation", func() {
 		})
 		nodeClaim.StatusConditions().SetTrue(v1.ConditionTypeConsolidatable)
 		spotNodeClaim.StatusConditions().SetTrue(v1.ConditionTypeConsolidatable)
-		ctx = options.ToContext(ctx, test.Options(test.OptionsFields{FeatureGates: test.FeatureGates{SpotToSpotConsolidation: lo.ToPtr(true)}}))
+		ctx = options.ToContext(ctx, test.Options(test.OptionsFields{FeatureGates: test.FeatureGates{SpotToSpotConsolidation: new(true)}}))
 	})
 	Context("Events", func() {
 		It("should not fire an event for ConsolidationDisabled when the NodePool has consolidation set to WhenEmptyOrUnderutilized", func() {
@@ -131,7 +131,7 @@ var _ = Describe("Consolidation", func() {
 			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, env.Clock, nodeStateController, nodeClaimStateController, []*corev1.Node{node}, []*v1.NodeClaim{nodeClaim})
 			ExpectSingletonReconciled(ctx, disruptionController)
 			// We get six calls here because we have Nodes and NodeClaims that fired for this event
-			// and each of the consolidation mechanisms specifies that this event should be fired
+			// from Emptiness, MultiNodeConsolidation, and SingleNodeConsolidation
 			Expect(recorder.Calls(events.Unconsolidatable)).To(Equal(6))
 		})
 		It("should fire an event when a candidate does not have a resolvable instance type", func() {
@@ -244,8 +244,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 			nodeClaim2, node2 := test.NodeClaimAndNode(v1.NodeClaim{
@@ -302,8 +302,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 			ExpectApplied(ctx, env.Client, rs, pod, node, nodeClaim, nodePool)
@@ -454,8 +454,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 			for i := range numNodes {
@@ -497,8 +497,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 			for i := range numNodes {
@@ -805,6 +805,13 @@ var _ = Describe("Consolidation", func() {
 			ExpectApplied(ctx, env.Client, nodePool)
 			for i := range numNodes {
 				ExpectApplied(ctx, env.Client, nodeClaims[i], nodes[i])
+				// Add a pod so that the node is non-empty and eligible for consolidation
+				pod := test.Pod(test.PodOptions{
+					ObjectMeta:           metav1.ObjectMeta{Labels: labels, OwnerReferences: []metav1.OwnerReference{metav1.OwnerReference{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: rs.Name, UID: rs.UID, Controller: lo.ToPtr(true), BlockOwnerDeletion: lo.ToPtr(true)}}},
+					ResourceRequirements: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")}},
+				})
+				ExpectApplied(ctx, env.Client, pod)
+				ExpectManualBinding(ctx, env.Client, pod, nodes[i])
 			}
 			// inform cluster state about nodes and nodeclaims
 			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, env.Clock, nodeStateController, nodeClaimStateController, nodes, nodeClaims)
@@ -867,6 +874,13 @@ var _ = Describe("Consolidation", func() {
 			for i := 0; i < len(nodeClaims); i++ {
 				nodeClaims[i].StatusConditions().SetTrue(v1.ConditionTypeConsolidatable)
 				ExpectApplied(ctx, env.Client, nodeClaims[i], nodes[i])
+				// Add a pod so that the node is non-empty and eligible for consolidation
+				pod := test.Pod(test.PodOptions{
+					ObjectMeta:           metav1.ObjectMeta{Labels: labels, OwnerReferences: []metav1.OwnerReference{metav1.OwnerReference{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: rs.Name, UID: rs.UID, Controller: lo.ToPtr(true), BlockOwnerDeletion: lo.ToPtr(true)}}},
+					ResourceRequirements: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")}},
+				})
+				ExpectApplied(ctx, env.Client, pod)
+				ExpectManualBinding(ctx, env.Client, pod, nodes[i])
 			}
 
 			// inform cluster state about nodes and nodeclaims
@@ -892,6 +906,13 @@ var _ = Describe("Consolidation", func() {
 			ExpectApplied(ctx, env.Client, nodePool)
 			for i := range numNodes {
 				ExpectApplied(ctx, env.Client, nodeClaims[i], nodes[i])
+				// Add a pod so that the node is non-empty and eligible for consolidation
+				pod := test.Pod(test.PodOptions{
+					ObjectMeta:           metav1.ObjectMeta{Labels: labels, OwnerReferences: []metav1.OwnerReference{metav1.OwnerReference{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: rs.Name, UID: rs.UID, Controller: lo.ToPtr(true), BlockOwnerDeletion: lo.ToPtr(true)}}},
+					ResourceRequirements: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")}},
+				})
+				ExpectApplied(ctx, env.Client, pod)
+				ExpectManualBinding(ctx, env.Client, pod, nodes[i])
 			}
 			// inform cluster state about nodes and nodeclaims
 			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, env.Clock, nodeStateController, nodeClaimStateController, nodes, nodeClaims)
@@ -954,6 +975,13 @@ var _ = Describe("Consolidation", func() {
 			for i := 0; i < len(nodeClaims); i++ {
 				nodeClaims[i].StatusConditions().SetTrue(v1.ConditionTypeConsolidatable)
 				ExpectApplied(ctx, env.Client, nodeClaims[i], nodes[i])
+				// Add a pod so that the node is non-empty and eligible for consolidation
+				pod := test.Pod(test.PodOptions{
+					ObjectMeta:           metav1.ObjectMeta{Labels: labels, OwnerReferences: []metav1.OwnerReference{metav1.OwnerReference{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: rs.Name, UID: rs.UID, Controller: lo.ToPtr(true), BlockOwnerDeletion: lo.ToPtr(true)}}},
+					ResourceRequirements: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")}},
+				})
+				ExpectApplied(ctx, env.Client, pod)
+				ExpectManualBinding(ctx, env.Client, pod, nodes[i])
 			}
 
 			// inform cluster state about nodes and nodeclaims
@@ -992,8 +1020,8 @@ var _ = Describe("Consolidation", func() {
 								Kind:               "ReplicaSet",
 								Name:               rs.Name,
 								UID:                rs.UID,
-								Controller:         lo.ToPtr(true),
-								BlockOwnerDeletion: lo.ToPtr(true),
+								Controller:         new(true),
+								BlockOwnerDeletion: new(true),
 							},
 						}}})
 				ExpectApplied(ctx, env.Client, rs, pod, node, nodeClaim, nodePool)
@@ -1079,8 +1107,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 			ExpectApplied(ctx, env.Client, rs, pod, spotNode, spotNodeClaim, nodePool)
@@ -1106,7 +1134,7 @@ var _ = Describe("Consolidation", func() {
 			Expect(ok).To(BeTrue())
 		})
 		It("cannot replace spot with spot if the spotToSpotConsolidation is disabled", func() {
-			ctx = options.ToContext(ctx, test.Options(test.OptionsFields{FeatureGates: test.FeatureGates{SpotToSpotConsolidation: lo.ToPtr(false)}}))
+			ctx = options.ToContext(ctx, test.Options(test.OptionsFields{FeatureGates: test.FeatureGates{SpotToSpotConsolidation: new(false)}}))
 			// create our RS so we can link a pod to it
 			rs := test.ReplicaSet()
 			ExpectApplied(ctx, env.Client, rs)
@@ -1120,8 +1148,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 			ExpectApplied(ctx, env.Client, rs, pod, spotNode, spotNodeClaim, nodePool)
@@ -1195,8 +1223,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 			ExpectApplied(ctx, env.Client, rs, pod, spotNode, spotNodeClaim, nodePool)
@@ -1279,8 +1307,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 			ExpectApplied(ctx, env.Client, rs, pod, spotNode, spotNodeClaim, nodePool)
@@ -1332,7 +1360,7 @@ var _ = Describe("Consolidation", func() {
 					Key:      corev1.LabelInstanceTypeStable,
 					Operator: corev1.NodeSelectorOpExists,
 
-					MinValues: lo.ToPtr(16),
+					MinValues: new(16),
 				},
 			}
 			// Fetch 18 spot instances
@@ -1397,8 +1425,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 			ExpectApplied(ctx, env.Client, rs, pod, spotNode, spotNodeClaim, nodePool)
@@ -1452,7 +1480,7 @@ var _ = Describe("Consolidation", func() {
 					Key:      corev1.LabelInstanceTypeStable,
 					Operator: corev1.NodeSelectorOpExists,
 
-					MinValues: lo.ToPtr(2),
+					MinValues: new(2),
 				},
 				{
 					Key:      v1.CapacityTypeLabelKey,
@@ -1460,32 +1488,26 @@ var _ = Describe("Consolidation", func() {
 					Values:   []string{v1.CapacityTypeOnDemand},
 				},
 			}
-			currentInstanceType := fake.NewInstanceType(fake.InstanceTypeOptions{
-				Name: "current-on-demand",
-				Resources: corev1.ResourceList{
+			currentInstanceType := fake.NewInstanceType("current-on-demand",
+				fake.WithResources(corev1.ResourceList{
 					corev1.ResourceCPU: resource.MustParse("5"),
-				},
-				Offerings: []*cloudprovider.Offering{
-					{
-						Available:    true,
-						Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeOnDemand, corev1.LabelTopologyZone: "test-zone-1a"}),
-						Price:        0.5,
-					},
-				},
-			})
-			otherInstanceType := fake.NewInstanceType(fake.InstanceTypeOptions{
-				Name: "other-on-demand",
-				Resources: corev1.ResourceList{
+				}),
+				fake.WithOfferings(cloudprovider.Offering{
+					Available:    true,
+					Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeOnDemand, corev1.LabelTopologyZone: "test-zone-1a"}),
+					Price:        0.5,
+				}),
+			)
+			otherInstanceType := fake.NewInstanceType("other-on-demand",
+				fake.WithResources(corev1.ResourceList{
 					corev1.ResourceCPU: resource.MustParse("5"),
-				},
-				Offerings: []*cloudprovider.Offering{
-					{
-						Available:    true,
-						Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeOnDemand, corev1.LabelTopologyZone: "test-zone-1a"}),
-						Price:        0.4,
-					},
-				},
-			})
+				}),
+				fake.WithOfferings(cloudprovider.Offering{
+					Available:    true,
+					Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeOnDemand, corev1.LabelTopologyZone: "test-zone-1a"}),
+					Price:        0.4,
+				}),
+			)
 			cloudProvider.InstanceTypes = []*cloudprovider.InstanceType{
 				currentInstanceType,
 				otherInstanceType,
@@ -1549,7 +1571,7 @@ var _ = Describe("Consolidation", func() {
 					Key:      corev1.LabelInstanceTypeStable,
 					Operator: corev1.NodeSelectorOpExists,
 
-					MinValues: lo.ToPtr(10),
+					MinValues: new(10),
 				},
 			}
 			// Fetch 18 spot instances
@@ -1614,8 +1636,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 			ExpectApplied(ctx, env.Client, rs, pod, spotNode, spotNodeClaim, nodePool)
@@ -1670,7 +1692,7 @@ var _ = Describe("Consolidation", func() {
 						Key:      corev1.LabelInstanceTypeStable,
 						Operator: corev1.NodeSelectorOpExists,
 
-						MinValues: lo.ToPtr(16),
+						MinValues: new(16),
 					},
 				}
 				// Fetch 18 spot instances
@@ -1731,8 +1753,8 @@ var _ = Describe("Consolidation", func() {
 								Kind:               "ReplicaSet",
 								Name:               rs.Name,
 								UID:                rs.UID,
-								Controller:         lo.ToPtr(true),
-								BlockOwnerDeletion: lo.ToPtr(true),
+								Controller:         new(true),
+								BlockOwnerDeletion: new(true),
 							},
 						}}})
 				ExpectApplied(ctx, env.Client, rs, pod, spotNode, spotNodeClaim, nodePool)
@@ -1772,8 +1794,8 @@ var _ = Describe("Consolidation", func() {
 								Kind:               "ReplicaSet",
 								Name:               rs.Name,
 								UID:                rs.UID,
-								Controller:         lo.ToPtr(true),
-								BlockOwnerDeletion: lo.ToPtr(true),
+								Controller:         new(true),
+								BlockOwnerDeletion: new(true),
 							},
 						}}})
 
@@ -1832,8 +1854,8 @@ var _ = Describe("Consolidation", func() {
 								Kind:               "ReplicaSet",
 								Name:               rs.Name,
 								UID:                rs.UID,
-								Controller:         lo.ToPtr(true),
-								BlockOwnerDeletion: lo.ToPtr(true),
+								Controller:         new(true),
+								BlockOwnerDeletion: new(true),
 							},
 						}}})
 				pdb := test.PodDisruptionBudget(test.PDBOptions{
@@ -1889,8 +1911,8 @@ var _ = Describe("Consolidation", func() {
 								Kind:               "ReplicaSet",
 								Name:               rs.Name,
 								UID:                rs.UID,
-								Controller:         lo.ToPtr(true),
-								BlockOwnerDeletion: lo.ToPtr(true),
+								Controller:         new(true),
+								BlockOwnerDeletion: new(true),
 							},
 						}}})
 
@@ -1972,8 +1994,8 @@ var _ = Describe("Consolidation", func() {
 								Kind:               "ReplicaSet",
 								Name:               rs.Name,
 								UID:                rs.UID,
-								Controller:         lo.ToPtr(true),
-								BlockOwnerDeletion: lo.ToPtr(true),
+								Controller:         new(true),
+								BlockOwnerDeletion: new(true),
 							},
 						}}})
 
@@ -2036,8 +2058,8 @@ var _ = Describe("Consolidation", func() {
 								Kind:               "ReplicaSet",
 								Name:               rs.Name,
 								UID:                rs.UID,
-								Controller:         lo.ToPtr(true),
-								BlockOwnerDeletion: lo.ToPtr(true),
+								Controller:         new(true),
+								BlockOwnerDeletion: new(true),
 							},
 						},
 					},
@@ -2126,8 +2148,8 @@ var _ = Describe("Consolidation", func() {
 								Kind:               "ReplicaSet",
 								Name:               rs.Name,
 								UID:                rs.UID,
-								Controller:         lo.ToPtr(true),
-								BlockOwnerDeletion: lo.ToPtr(true),
+								Controller:         new(true),
+								BlockOwnerDeletion: new(true),
 							},
 						},
 					},
@@ -2198,36 +2220,32 @@ var _ = Describe("Consolidation", func() {
 			Entry("if the candidate is spot node", true),
 		)
 		It("won't replace node if any spot replacement is more expensive", func() {
-			currentInstance := fake.NewInstanceType(fake.InstanceTypeOptions{
-				Name: "current-on-demand",
-				Offerings: []*cloudprovider.Offering{
-					{
-						Available:    false,
-						Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeOnDemand, corev1.LabelTopologyZone: "test-zone-1a"}),
-						Price:        0.5,
-					},
-				},
-			})
-			replacementInstance := fake.NewInstanceType(fake.InstanceTypeOptions{
-				Name: "potential-spot-replacement",
-				Offerings: []*cloudprovider.Offering{
-					{
+			currentInstance := fake.NewInstanceType("current-on-demand",
+				fake.WithOfferings(cloudprovider.Offering{
+					Available:    false,
+					Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeOnDemand, corev1.LabelTopologyZone: "test-zone-1a"}),
+					Price:        0.5,
+				}),
+			)
+			replacementInstance := fake.NewInstanceType("potential-spot-replacement",
+				fake.WithOfferings(
+					cloudprovider.Offering{
 						Available:    true,
 						Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeSpot, corev1.LabelTopologyZone: "test-zone-1a"}),
 						Price:        1.0,
 					},
-					{
+					cloudprovider.Offering{
 						Available:    true,
 						Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeSpot, corev1.LabelTopologyZone: "test-zone-1b"}),
 						Price:        0.2,
 					},
-					{
+					cloudprovider.Offering{
 						Available:    true,
 						Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeSpot, corev1.LabelTopologyZone: "test-zone-1c"}),
 						Price:        0.4,
 					},
-				},
-			})
+				),
+			)
 			cloudProvider.InstanceTypes = []*cloudprovider.InstanceType{
 				currentInstance,
 				replacementInstance,
@@ -2247,8 +2265,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 			nodeClaim, node = test.NodeClaimAndNode(v1.NodeClaim{
@@ -2281,41 +2299,37 @@ var _ = Describe("Consolidation", func() {
 			ExpectExists(ctx, env.Client, node)
 		})
 		It("won't replace on-demand node if on-demand replacement is more expensive", func() {
-			currentInstance := fake.NewInstanceType(fake.InstanceTypeOptions{
-				Name: "current-on-demand",
-				Offerings: []*cloudprovider.Offering{
-					{
-						Available:    false,
-						Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeOnDemand, corev1.LabelTopologyZone: "test-zone-1a"}),
-						Price:        0.5,
-					},
-				},
-			})
-			replacementInstance := fake.NewInstanceType(fake.InstanceTypeOptions{
-				Name: "on-demand-replacement",
-				Offerings: []*cloudprovider.Offering{
-					{
+			currentInstance := fake.NewInstanceType("current-on-demand",
+				fake.WithOfferings(cloudprovider.Offering{
+					Available:    false,
+					Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeOnDemand, corev1.LabelTopologyZone: "test-zone-1a"}),
+					Price:        0.5,
+				}),
+			)
+			replacementInstance := fake.NewInstanceType("on-demand-replacement",
+				fake.WithOfferings(
+					cloudprovider.Offering{
 						Available:    true,
 						Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeOnDemand, corev1.LabelTopologyZone: "test-zone-1a"}),
 						Price:        0.6,
 					},
-					{
+					cloudprovider.Offering{
 						Available:    true,
 						Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeOnDemand, corev1.LabelTopologyZone: "test-zone-1b"}),
 						Price:        0.6,
 					},
-					{
+					cloudprovider.Offering{
 						Available:    true,
 						Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeSpot, corev1.LabelTopologyZone: "test-zone-1b"}),
 						Price:        0.2,
 					},
-					{
+					cloudprovider.Offering{
 						Available:    true,
 						Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeSpot, corev1.LabelTopologyZone: "test-zone-1c"}),
 						Price:        0.3,
 					},
-				},
-			})
+				),
+			)
 
 			cloudProvider.InstanceTypes = []*cloudprovider.InstanceType{
 				currentInstance,
@@ -2336,8 +2350,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 
@@ -2416,8 +2430,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 			ExpectApplied(ctx, env.Client, rs, pods[0], pods[1], pods[2], nodeClaims[0], nodes[0], nodeClaims[1], nodes[1], nodePool)
@@ -2491,8 +2505,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 			nodeClassNodePool := test.NodePool()
@@ -2541,8 +2555,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					},
 				},
@@ -2584,8 +2598,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 
@@ -2641,8 +2655,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 			nodeClaims[1].Annotations = lo.Assign(nodeClaims[1].Annotations, map[string]string{v1.DoNotDisruptAnnotationKey: "true"})
@@ -2683,8 +2697,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 			// Block this pod from being disrupted with karpenter.sh/do-not-disrupt
@@ -2726,8 +2740,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 			// Block this pod from being disrupted with karpenter.sh/do-not-disrupt
@@ -2773,8 +2787,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 
@@ -2820,8 +2834,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 			// Set a 2m duration-based do-not-disrupt annotation on pod[2]
@@ -2863,8 +2877,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 			// All pods have a 2m duration-based do-not-disrupt annotation
@@ -2912,8 +2926,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 			// Set an invalid format annotation - should not block consolidation
@@ -2953,8 +2967,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 
@@ -2999,8 +3013,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 			ExpectApplied(ctx, env.Client, rs, pods[0], pods[1], pods[2], nodeClaims[0], nodes[0], nodeClaims[1], nodes[1], nodePool)
@@ -3033,23 +3047,216 @@ var _ = Describe("Consolidation", func() {
 			})
 			Expect(ok).To(BeTrue())
 		})
+		It("should not consolidate pods onto a destination node that is under its consolidateAfter window", func() {
+			// Override consolidateAfter to a nonzero duration.
+			// Both nodes are leastExpensiveInstance (from BeforeEach), so no cheaper replacement
+			// exists — the only consolidation path is to delete nodes[1] and move its pod
+			// to nodes[0]. With consolidateAfter still active on nodes[0], this should be blocked.
+			nodePool.Spec.Disruption.ConsolidateAfter = v1.MustParseNillableDuration("1m")
+
+			// create our RS so we can link a pod to it
+			rs := test.ReplicaSet()
+			ExpectApplied(ctx, env.Client, rs)
+			Expect(env.Client.Get(ctx, client.ObjectKeyFromObject(rs), rs)).To(Succeed())
+
+			pods := test.Pods(3, test.PodOptions{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels,
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion:         "apps/v1",
+							Kind:               "ReplicaSet",
+							Name:               rs.Name,
+							UID:                rs.UID,
+							Controller:         lo.ToPtr(true),
+							BlockOwnerDeletion: lo.ToPtr(true),
+						},
+					}}})
+			ExpectApplied(ctx, env.Client, rs, pods[0], pods[1], pods[2], nodeClaims[0], nodes[0], nodeClaims[1], nodes[1], nodePool)
+
+			// bind pods to node — 2 on nodes[0], 1 on nodes[1]
+			ExpectManualBinding(ctx, env.Client, pods[0], nodes[0])
+			ExpectManualBinding(ctx, env.Client, pods[1], nodes[0])
+			ExpectManualBinding(ctx, env.Client, pods[2], nodes[1])
+
+			// Initialize both nodes — this sets the Initialized condition timestamp to ~env.Clock.Now()
+			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, env.Clock, nodeStateController, nodeClaimStateController, []*corev1.Node{nodes[0], nodes[1]}, []*v1.NodeClaim{nodeClaims[0], nodeClaims[1]})
+
+			// Do NOT advance clock — both nodes are within the 1m consolidateAfter window.
+			// The scheduler should refuse to place non-pending pods onto nodes[0] because it's under consolidateAfter,
+			// blocking the delete of nodes[1] (which would need to reschedule pods[2] onto nodes[0]).
+			ExpectSingletonReconciled(ctx, disruptionController)
+
+			// No consolidation should happen — destination node is under consolidateAfter
+			cmds := queue.GetCommands()
+			Expect(cmds).To(HaveLen(0))
+			Expect(ExpectNodes(ctx, env.Client)).To(HaveLen(2))
+
+			// Advance clock past the 1m consolidateAfter window
+			env.Clock.Step(2 * time.Minute)
+
+			// Re-sync cluster state and re-mark nodeClaims as consolidatable after state update
+			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, env.Clock, nodeStateController, nodeClaimStateController, []*corev1.Node{nodes[0], nodes[1]}, []*v1.NodeClaim{nodeClaims[0], nodeClaims[1]})
+			for _, nc := range nodeClaims {
+				nc = ExpectExists(ctx, env.Client, nc)
+				nc.StatusConditions().SetTrue(v1.ConditionTypeConsolidatable)
+				ExpectApplied(ctx, env.Client, nc)
+				ExpectReconcileSucceeded(ctx, nodeClaimStateController, client.ObjectKeyFromObject(nc))
+			}
+			// Reset the disruption controller so consolidation methods are not cached as consolidated
+			*queue = lo.FromPtr(disruption.NewQueue(env.Client, recorder, cluster, env.Clock, prov))
+			disruptionController = disruption.NewController(env.Clock, env.Client, prov, cloudProvider, recorder, cluster, queue, clusterCost,
+				disruption.WithMethods(NewMethodsWithNopValidator()...))
+			ExpectSingletonReconciled(ctx, disruptionController)
+
+			// Now consolidation should proceed — consolidateAfter window has expired
+			cmds = queue.GetCommands()
+			Expect(cmds).To(HaveLen(1))
+			ExpectObjectReconciled(ctx, env.Client, queue, cmds[0].Candidates[0].NodeClaim)
+			ExpectNodeClaimsCascadeDeletion(ctx, env.Client, nodeClaims[1])
+
+			Expect(ExpectNodeClaims(ctx, env.Client)).To(HaveLen(1))
+			Expect(ExpectNodes(ctx, env.Client)).To(HaveLen(1))
+			ExpectNotFound(ctx, env.Client, nodeClaims[1], nodes[1])
+		})
+		It("should consolidate pods onto a destination node with consolidateAfter set to Never", func() {
+			// consolidateAfter: Never means the node never becomes a consolidation *candidate* (source),
+			// but it should still be a valid *destination* for pods during consolidation.
+			// Set up two NodePools: source allows consolidation (0s), destination has Never.
+			destinationNodePool := test.NodePool(v1.NodePool{
+				Spec: v1.NodePoolSpec{
+					Disruption: v1.Disruption{
+						ConsolidationPolicy: v1.ConsolidationPolicyWhenEmptyOrUnderutilized,
+						Budgets:             []v1.Budget{{Nodes: "100%"}},
+						ConsolidateAfter:    v1.MustParseNillableDuration("Never"),
+					},
+				},
+			})
+
+			// create our RS so we can link a pod to it
+			rs := test.ReplicaSet()
+			ExpectApplied(ctx, env.Client, rs)
+			Expect(env.Client.Get(ctx, client.ObjectKeyFromObject(rs), rs)).To(Succeed())
+
+			pod := test.Pod(test.PodOptions{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels,
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion:         "apps/v1",
+							Kind:               "ReplicaSet",
+							Name:               rs.Name,
+							UID:                rs.UID,
+							Controller:         lo.ToPtr(true),
+							BlockOwnerDeletion: lo.ToPtr(true),
+						},
+					}}})
+
+			// destination node belongs to the "Never" NodePool
+			destinationNodeClaim, destinationNode := test.NodeClaimAndNode(v1.NodeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						v1.NodePoolLabelKey:            destinationNodePool.Name,
+						corev1.LabelInstanceTypeStable: leastExpensiveInstance.Name,
+						v1.CapacityTypeLabelKey:        leastExpensiveOffering.Requirements.Get(v1.CapacityTypeLabelKey).Any(),
+						corev1.LabelTopologyZone:       leastExpensiveOffering.Requirements.Get(corev1.LabelTopologyZone).Any(),
+					},
+				},
+				Status: v1.NodeClaimStatus{
+					Allocatable: map[corev1.ResourceName]resource.Quantity{
+						corev1.ResourceCPU:  resource.MustParse("32"),
+						corev1.ResourcePods: resource.MustParse("100"),
+					},
+				},
+			})
+
+			ExpectApplied(ctx, env.Client, rs, pod, nodeClaims[0], nodes[0], destinationNodeClaim, destinationNode, nodePool, destinationNodePool)
+			ExpectManualBinding(ctx, env.Client, pod, nodes[0])
+
+			// Initialize both nodes
+			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, env.Clock, nodeStateController, nodeClaimStateController,
+				[]*corev1.Node{nodes[0], destinationNode}, []*v1.NodeClaim{nodeClaims[0], destinationNodeClaim})
+
+			// Do NOT advance clock — destination node should still be valid because
+			// consolidateAfter: Never means the node is never "under consolidateAfter"
+			ExpectSingletonReconciled(ctx, disruptionController)
+
+			// Consolidation should succeed — destination node accepts pods regardless of time
+			cmds := queue.GetCommands()
+			Expect(cmds).To(HaveLen(1))
+			ExpectObjectReconciled(ctx, env.Client, queue, cmds[0].Candidates[0].NodeClaim)
+			ExpectNodeClaimsCascadeDeletion(ctx, env.Client, nodeClaims[0])
+
+			Expect(ExpectNodeClaims(ctx, env.Client)).To(HaveLen(1))
+			Expect(ExpectNodes(ctx, env.Client)).To(HaveLen(1))
+			ExpectNotFound(ctx, env.Client, nodeClaims[0], nodes[0])
+		})
+		It("should replace a node with a cheaper one even when consolidateAfter has not expired", func() {
+			// The replace path launches a new NodeClaim rather than scheduling onto an existing node.
+			// consolidateAfter on the destination should not block replacements since there is no
+			// existing destination node to gate — we're creating a brand new one.
+			nodePool.Spec.Disruption.ConsolidateAfter = v1.MustParseNillableDuration("1m")
+
+			// create our RS so we can link a pod to it
+			rs := test.ReplicaSet()
+			ExpectApplied(ctx, env.Client, rs)
+			Expect(env.Client.Get(ctx, client.ObjectKeyFromObject(rs), rs)).To(Succeed())
+
+			pod := test.Pod(test.PodOptions{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels,
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion:         "apps/v1",
+							Kind:               "ReplicaSet",
+							Name:               rs.Name,
+							UID:                rs.UID,
+							Controller:         lo.ToPtr(true),
+							BlockOwnerDeletion: lo.ToPtr(true),
+						},
+					}}})
+			// Use the most expensive node as the source — consolidation should replace it with a cheaper one
+			ExpectApplied(ctx, env.Client, rs, pod, node, nodeClaim, nodePool)
+
+			// bind pod to the expensive node
+			ExpectManualBinding(ctx, env.Client, pod, node)
+
+			// Initialize node and advance clock past consolidateAfter so the SOURCE is eligible
+			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, env.Clock, nodeStateController, nodeClaimStateController, []*corev1.Node{node}, []*v1.NodeClaim{nodeClaim})
+			env.Clock.Step(2 * time.Minute)
+
+			// Re-sync state after clock advance
+			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, env.Clock, nodeStateController, nodeClaimStateController, []*corev1.Node{node}, []*v1.NodeClaim{nodeClaim})
+
+			ExpectSingletonReconciled(ctx, disruptionController)
+
+			// Should create a replacement — the replace path is not blocked by consolidateAfter
+			cmds := queue.GetCommands()
+			Expect(cmds).To(HaveLen(1))
+			ExpectMakeNewNodeClaimsReady(ctx, env.Client, env.Clock, cluster, cloudProvider, cmds[0])
+			ExpectObjectReconciled(ctx, env.Client, queue, nodeClaim)
+			ExpectNodeClaimsCascadeDeletion(ctx, env.Client, nodeClaim)
+
+			// Should have replaced with a cheaper node
+			remainingNodeClaims := ExpectNodeClaims(ctx, env.Client)
+			remainingNodes := ExpectNodes(ctx, env.Client)
+			Expect(remainingNodeClaims).To(HaveLen(1))
+			Expect(remainingNodes).To(HaveLen(1))
+			Expect(remainingNodeClaims[0].Name).ToNot(Equal(nodeClaim.Name))
+			ExpectNotFound(ctx, env.Client, nodeClaim, node)
+		})
 		It("should consider initialized nodes before uninitialized nodes", func() {
-			defaultInstanceType := fake.NewInstanceType(fake.InstanceTypeOptions{
-				Name: "default-instance-type",
-				Resources: corev1.ResourceList{
+			defaultInstanceType := fake.NewInstanceType("default-instance-type",
+				fake.WithResources(corev1.ResourceList{
 					corev1.ResourceCPU:    resource.MustParse("3"),
 					corev1.ResourceMemory: resource.MustParse("3Gi"),
 					corev1.ResourcePods:   resource.MustParse("110"),
-				},
-			})
-			smallInstanceType := fake.NewInstanceType(fake.InstanceTypeOptions{
-				Name: "small-instance-type",
-				Resources: corev1.ResourceList{
+				}),
+			)
+			smallInstanceType := fake.NewInstanceType("small-instance-type",
+				fake.WithResources(corev1.ResourceList{
 					corev1.ResourceCPU:    resource.MustParse("1"),
 					corev1.ResourceMemory: resource.MustParse("1Gi"),
 					corev1.ResourcePods:   resource.MustParse("10"),
-				},
-			})
+				}),
+			)
 			cloudProvider.InstanceTypes = []*cloudprovider.InstanceType{
 				defaultInstanceType,
 				smallInstanceType,
@@ -3068,8 +3275,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					},
 				},
@@ -3145,8 +3352,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					},
 				},
@@ -3192,8 +3399,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 
@@ -3244,8 +3451,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 
@@ -3302,8 +3509,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 
@@ -3339,7 +3546,7 @@ var _ = Describe("Consolidation", func() {
 		var nodes []*corev1.Node
 
 		BeforeEach(func() {
-			disruptionController = disruption.NewController(env.Clock, env.Client, prov, cloudProvider, recorder, cluster, queue, disruption.WithMethods(NewMethodsWithRealValidator()...))
+			disruptionController = disruption.NewController(env.Clock, env.Client, prov, cloudProvider, recorder, cluster, queue, clusterCost, disruption.WithMethods(NewMethodsWithRealValidator()...))
 			nodeClaims, nodes = test.NodeClaimsAndNodes(2, v1.NodeClaim{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
@@ -3396,8 +3603,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 
@@ -3461,8 +3668,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					},
 				},
@@ -3504,8 +3711,8 @@ var _ = Describe("Consolidation", func() {
 									Kind:               "ReplicaSet",
 									Name:               rs.Name,
 									UID:                rs.UID,
-									Controller:         lo.ToPtr(true),
-									BlockOwnerDeletion: lo.ToPtr(true),
+									Controller:         new(true),
+									BlockOwnerDeletion: new(true),
 								},
 							},
 						},
@@ -3786,8 +3993,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 
@@ -3846,8 +4053,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 
@@ -3894,8 +4101,8 @@ var _ = Describe("Consolidation", func() {
 								Kind:               "ReplicaSet",
 								Name:               rs.Name,
 								UID:                rs.UID,
-								Controller:         lo.ToPtr(true),
-								BlockOwnerDeletion: lo.ToPtr(true),
+								Controller:         new(true),
+								BlockOwnerDeletion: new(true),
 							},
 						}}})
 
@@ -3958,7 +4165,7 @@ var _ = Describe("Consolidation", func() {
 		)
 		DescribeTable("should wait for the node TTL for non-empty nodes before consolidating (multi-node)",
 			func(spotToSpot bool) {
-				disruptionController = disruption.NewController(env.Clock, env.Client, prov, cloudProvider, recorder, cluster, queue, disruption.WithMethods(NewMethodsWithRealValidator()...))
+				disruptionController = disruption.NewController(env.Clock, env.Client, prov, cloudProvider, recorder, cluster, queue, clusterCost, disruption.WithMethods(NewMethodsWithRealValidator()...))
 				nodeClaims = lo.Ternary(spotToSpot, nodeClaims, spotNodeClaims)
 				nodes = lo.Ternary(spotToSpot, nodes, spotNodes)
 				// create our RS so we can link a pod to it
@@ -3972,8 +4179,8 @@ var _ = Describe("Consolidation", func() {
 								Kind:               "ReplicaSet",
 								Name:               rs.Name,
 								UID:                rs.UID,
-								Controller:         lo.ToPtr(true),
-								BlockOwnerDeletion: lo.ToPtr(true),
+								Controller:         new(true),
+								BlockOwnerDeletion: new(true),
 							},
 						}}})
 
@@ -4028,9 +4235,9 @@ var _ = Describe("Consolidation", func() {
 			Entry("if the candidate is on-demand node", false),
 			Entry("if the candidate is spot node", true),
 		)
-		DescribeTable("should continue to multi-nodeclaim consolidation when emptiness fails validation after the node ttl",
+		DescribeTable("should consolidate multiple empty nodes via multi-nodeclaim consolidation",
 			func(spotToSpot bool) {
-				disruptionController = disruption.NewController(env.Clock, env.Client, prov, cloudProvider, recorder, cluster, queue, disruption.WithMethods(NewMethodsWithRealValidator()...))
+				disruptionController = disruption.NewController(env.Clock, env.Client, prov, cloudProvider, recorder, cluster, queue, clusterCost, disruption.WithMethods(NewMethodsWithRealValidator()...))
 				nodeClaims = lo.Ternary(spotToSpot, nodeClaims, spotNodeClaims)
 				nodes = lo.Ternary(spotToSpot, nodes, spotNodes)
 				// create our RS so we can link a pod to it
@@ -4044,11 +4251,12 @@ var _ = Describe("Consolidation", func() {
 								Kind:               "ReplicaSet",
 								Name:               rs.Name,
 								UID:                rs.UID,
-								Controller:         lo.ToPtr(true),
-								BlockOwnerDeletion: lo.ToPtr(true),
+								Controller:         new(true),
+								BlockOwnerDeletion: new(true),
 							},
 						}}})
 
+				// Apply nodes without binding pods (nodes are empty)
 				ExpectApplied(ctx, env.Client, rs, pods[0], pods[1], pods[2], nodeClaims[0], nodes[0], nodeClaims[1], nodes[1], nodeClaims[2], nodes[2], nodePool)
 				ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, env.Clock, nodeStateController, nodeClaimStateController, []*corev1.Node{nodes[0], nodes[1], nodes[2]}, []*v1.NodeClaim{nodeClaims[0], nodeClaims[1], nodeClaims[2]})
 
@@ -4059,7 +4267,7 @@ var _ = Describe("Consolidation", func() {
 						ExpectSingletonReconciled(ctx, disruptionController)
 					},
 					func() {
-						// wait for the controller to block on the validation timeout
+						// wait for the controller to block on the validation timeout (multi-node)
 						Eventually(env.Clock.HasWaiters, time.Second*5).Should(BeTrue())
 						// controller should be blocking during the timeout
 						Expect(finished.Load()).To(BeFalse())
@@ -4068,22 +4276,8 @@ var _ = Describe("Consolidation", func() {
 						ExpectExists(ctx, env.Client, nodeClaims[1])
 						ExpectExists(ctx, env.Client, nodeClaims[2])
 
-						// bind pods to nodes
-						ExpectManualBinding(ctx, env.Client, pods[0], nodes[0])
-						ExpectManualBinding(ctx, env.Client, pods[1], nodes[1])
-						ExpectManualBinding(ctx, env.Client, pods[2], nodes[2])
-
-						ExpectReconcileSucceeded(ctx, nodeStateController, client.ObjectKeyFromObject(nodes[0]))
-						ExpectReconcileSucceeded(ctx, nodeStateController, client.ObjectKeyFromObject(nodes[1]))
-						ExpectReconcileSucceeded(ctx, nodeStateController, client.ObjectKeyFromObject(nodes[2]))
-						// advance the clock so that the timeout expires for emptiness
-						Eventually(env.Clock.HasWaiters, time.Second*5).Should(BeTrue())
+						// advance the clock so that the multi-node validation timeout expires
 						env.Clock.Step(31 * time.Second)
-
-						// Succeed on multi node consolidation
-						Eventually(env.Clock.HasWaiters, time.Second*5).Should(BeTrue())
-						env.Clock.Step(31 * time.Second)
-						//ExpectMakeNewNodeClaimsReady(ctx, env.Client, &wg, cluster, cloudProvider, 1)
 						Eventually(finished.Load, 10*time.Second).Should(BeTrue())
 					},
 				)
@@ -4091,24 +4285,22 @@ var _ = Describe("Consolidation", func() {
 				// Process the item so that the nodes can be deleted.
 				cmds := queue.GetCommands()
 				Expect(cmds).To(HaveLen(1))
-				ExpectMakeNewNodeClaimsReady(ctx, env.Client, env.Clock, cluster, cloudProvider, cmds[0])
+
+				// Multi-node consolidation deletes all empty nodes
 				ExpectObjectReconciled(ctx, env.Client, queue, cmds[0].Candidates[0].NodeClaim)
 
 				// Cascade any deletion of the nodeclaim to the node
 				ExpectNodeClaimsCascadeDeletion(ctx, env.Client, nodeClaims[0], nodeClaims[1], nodeClaims[2])
 
-				// should have 2 nodes after multi nodeclaim consolidation deletes one
-				Expect(ExpectNodeClaims(ctx, env.Client)).To(HaveLen(1))
-				Expect(ExpectNodes(ctx, env.Client)).To(HaveLen(1))
-				// and delete node3 in single nodeclaim consolidation
-				ExpectNotFound(ctx, env.Client, nodeClaims[1], nodes[1], nodeClaims[2], nodes[2])
+				Expect(ExpectNodeClaims(ctx, env.Client)).To(HaveLen(0))
+				Expect(ExpectNodes(ctx, env.Client)).To(HaveLen(0))
 			},
 			Entry("if the candidate is on-demand node", false),
 			Entry("if the candidate is spot node", true),
 		)
 		DescribeTable("should continue to single nodeclaim consolidation when multi-nodeclaim consolidation fails validation after the node ttl",
 			func(spotToSpot bool) {
-				disruptionController = disruption.NewController(env.Clock, env.Client, prov, cloudProvider, recorder, cluster, queue, disruption.WithMethods(NewMethodsWithRealValidator()...))
+				disruptionController = disruption.NewController(env.Clock, env.Client, prov, cloudProvider, recorder, cluster, queue, clusterCost, disruption.WithMethods(NewMethodsWithRealValidator()...))
 				nodeClaims = lo.Ternary(spotToSpot, nodeClaims, spotNodeClaims)
 				nodes = lo.Ternary(spotToSpot, nodes, spotNodes)
 				// create our RS so we can link a pod to it
@@ -4122,8 +4314,8 @@ var _ = Describe("Consolidation", func() {
 								Kind:               "ReplicaSet",
 								Name:               rs.Name,
 								UID:                rs.UID,
-								Controller:         lo.ToPtr(true),
-								BlockOwnerDeletion: lo.ToPtr(true),
+								Controller:         new(true),
+								BlockOwnerDeletion: new(true),
 							},
 						}}})
 
@@ -4234,7 +4426,7 @@ var _ = Describe("Consolidation", func() {
 				nc.StatusConditions().SetTrue(v1.ConditionTypeConsolidatable)
 			}
 		})
-		It("should consider node lifetime remaining when calculating disruption cost", func() {
+		It("should consolidate the node with best savings ratio first", func() {
 			// create our RS so we can link a pod to it
 			rs := test.ReplicaSet()
 			ExpectApplied(ctx, env.Client, rs)
@@ -4247,8 +4439,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 
@@ -4258,7 +4450,7 @@ var _ = Describe("Consolidation", func() {
 			// need to sleep to force the second node to be created a bit after the first node.
 			ExpectApplied(ctx, env.Client, nodeClaims[1], nodes[1])
 
-			// two pods on node 1, one on node 2
+			// two pods on node 0, one on node 1
 			ExpectManualBinding(ctx, env.Client, pods[0], nodes[0])
 			ExpectManualBinding(ctx, env.Client, pods[1], nodes[0])
 			ExpectManualBinding(ctx, env.Client, pods[2], nodes[1])
@@ -4269,16 +4461,16 @@ var _ = Describe("Consolidation", func() {
 			ExpectSingletonReconciled(ctx, disruptionController)
 
 			// Process the item so that the nodes can be deleted.
-			ExpectObjectReconciled(ctx, env.Client, queue, nodeClaims[0])
+			ExpectObjectReconciled(ctx, env.Client, queue, nodeClaims[1])
 
 			// Cascade any deletion of the nodeclaim to the node
-			ExpectNodeClaimsCascadeDeletion(ctx, env.Client, nodeClaims[0])
+			ExpectNodeClaimsCascadeDeletion(ctx, env.Client, nodeClaims[1])
 
-			// the second node has more pods, so it would normally not be picked for consolidation, except it very little
-			// lifetime remaining, so it should be deleted
+			// Node 1 has fewer pods (lower RescheduleDisruptionCost) so better
+			// savings ratio (price/disruption). It sorts first and consolidates.
 			Expect(ExpectNodeClaims(ctx, env.Client)).To(HaveLen(1))
 			Expect(ExpectNodes(ctx, env.Client)).To(HaveLen(1))
-			ExpectNotFound(ctx, env.Client, nodeClaims[0], nodes[0])
+			ExpectNotFound(ctx, env.Client, nodeClaims[1], nodes[1])
 		})
 	})
 	Context("Topology Consideration", func() {
@@ -4355,8 +4547,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					}}})
 
@@ -4423,8 +4615,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					},
 				},
@@ -4479,8 +4671,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					},
 				},
@@ -4525,8 +4717,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					},
 				},
@@ -4619,7 +4811,7 @@ var _ = Describe("Consolidation", func() {
 				},
 			})
 			reservedNodeClaim.StatusConditions().SetTrue(v1.ConditionTypeConsolidatable)
-			ctx = options.ToContext(ctx, test.Options(test.OptionsFields{FeatureGates: test.FeatureGates{ReservedCapacity: lo.ToPtr(true)}}))
+			ctx = options.ToContext(ctx, test.Options(test.OptionsFields{FeatureGates: test.FeatureGates{ReservedCapacity: new(true)}}))
 		})
 		It("can consolidate from one reserved offering to another", func() {
 			leastExpensiveReservationID := fmt.Sprintf("r-%s", leastExpensiveInstance.Name)
@@ -4653,8 +4845,8 @@ var _ = Describe("Consolidation", func() {
 						Kind:               "ReplicaSet",
 						Name:               rs.Name,
 						UID:                rs.UID,
-						Controller:         lo.ToPtr(true),
-						BlockOwnerDeletion: lo.ToPtr(true),
+						Controller:         new(true),
+						BlockOwnerDeletion: new(true),
 					},
 				},
 			}})
@@ -4713,8 +4905,8 @@ var _ = Describe("Consolidation", func() {
 							Kind:               "ReplicaSet",
 							Name:               rs.Name,
 							UID:                rs.UID,
-							Controller:         lo.ToPtr(true),
-							BlockOwnerDeletion: lo.ToPtr(true),
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
 						},
 					},
 				}})
@@ -4876,7 +5068,7 @@ var _ = Describe("Consolidation", func() {
 			// Create a nodepool with instance type minValues requirement
 			nodePoolWithMinValues = test.NodePool(v1.NodePool{
 				Spec: v1.NodePoolSpec{
-					Weight: lo.ToPtr(int32(100)),
+					Weight: new(int32(100)),
 					Template: v1.NodeClaimTemplate{
 						Spec: v1.NodeClaimTemplateSpec{
 							Requirements: []v1.NodeSelectorRequirementWithMinValues{
@@ -4886,7 +5078,7 @@ var _ = Describe("Consolidation", func() {
 									Values: lo.Map(cloudProvider.InstanceTypes, func(it *cloudprovider.InstanceType, _ int) string {
 										return it.Name
 									}),
-									MinValues: lo.ToPtr(3),
+									MinValues: new(3),
 								},
 							},
 						},
@@ -4951,11 +5143,133 @@ var _ = Describe("Consolidation", func() {
 			})).To(HaveLen(2))
 		})
 	})
+	Context("Buffer Pods", func() {
+		It("should not empty-consolidate a node with only buffer pods", func() {
+			// Node has no real pods but has buffer pods — should NOT be deleted.
+			// Single/multi consolidation skips it (reschedulablePods==0).
+			// Emptiness would catch it, but HasBufferPods blocks.
+			ExpectApplied(ctx, env.Client, nodePool, nodeClaim, node)
+			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, env.Clock, nodeStateController, nodeClaimStateController, []*corev1.Node{node}, []*v1.NodeClaim{nodeClaim})
+
+			cluster.UpdateBufferPodCounts(map[string]int{
+				node.Spec.ProviderID: 5,
+			})
+
+			ExpectSingletonReconciled(ctx, disruptionController)
+
+			// Node should still exist
+			Expect(ExpectNodeClaims(ctx, env.Client)).To(HaveLen(1))
+			ExpectExists(ctx, env.Client, nodeClaim)
+		})
+
+		It("should allow consolidation of a node with real pods and buffer pods to a cheaper instance", func() {
+			// An expensive node with a small real pod + buffer pods. The consolidation
+			// simulation already includes virtual pods in pending (via GetPendingPods).
+			// A cheaper replacement that fits both real + virtual pods is legitimate.
+			pod := test.Pod(test.PodOptions{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels},
+				ResourceRequirements: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")},
+				},
+			})
+			ExpectApplied(ctx, env.Client, nodePool, nodeClaim, node, pod)
+			ExpectManualBinding(ctx, env.Client, pod, node)
+			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, env.Clock, nodeStateController, nodeClaimStateController, []*corev1.Node{node}, []*v1.NodeClaim{nodeClaim})
+
+			// Node hosts buffer pods (but also has a real pod making it a consolidation candidate)
+			cluster.UpdateBufferPodCounts(map[string]int{
+				node.Spec.ProviderID: 2,
+			})
+
+			ExpectSingletonReconciled(ctx, disruptionController)
+
+			// The node is on the most expensive instance type with only 1 CPU pod.
+			// Consolidation should propose a cheaper replacement.
+			cmds := queue.GetCommands()
+			Expect(len(cmds)).To(BeNumerically(">=", 1))
+		})
+
+		It("should skip buffer-only nodes in single-node consolidation but protect via emptiness", func() {
+			// Two nodes: node1 has only buffer pods, node2 has a real pod.
+			// node1 should not appear in any consolidation command.
+			nodeClaims, nodes := test.NodeClaimsAndNodes(2, v1.NodeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						v1.NodePoolLabelKey:            nodePool.Name,
+						corev1.LabelInstanceTypeStable: mostExpensiveInstance.Name,
+						v1.CapacityTypeLabelKey:        mostExpensiveOffering.Requirements.Get(v1.CapacityTypeLabelKey).Any(),
+						corev1.LabelTopologyZone:       mostExpensiveOffering.Requirements.Get(corev1.LabelTopologyZone).Any(),
+					},
+				},
+				Status: v1.NodeClaimStatus{
+					Allocatable: map[corev1.ResourceName]resource.Quantity{
+						corev1.ResourceCPU:  resource.MustParse("32"),
+						corev1.ResourcePods: resource.MustParse("100"),
+					},
+				},
+			})
+			for _, nc := range nodeClaims {
+				nc.StatusConditions().SetTrue(v1.ConditionTypeConsolidatable)
+			}
+
+			// Only node2 gets a real pod
+			pod := test.Pod(test.PodOptions{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels},
+				ResourceRequirements: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")},
+				},
+			})
+			ExpectApplied(ctx, env.Client, nodePool, nodeClaims[0], nodeClaims[1], nodes[0], nodes[1], pod)
+			ExpectManualBinding(ctx, env.Client, pod, nodes[1])
+			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, env.Clock, nodeStateController, nodeClaimStateController, nodes, nodeClaims)
+
+			// node1 has only buffer pods, node2 has real pod + buffer pods
+			cluster.UpdateBufferPodCounts(map[string]int{
+				nodes[0].Spec.ProviderID: 4,
+				nodes[1].Spec.ProviderID: 2,
+			})
+
+			ExpectSingletonReconciled(ctx, disruptionController)
+
+			// node1 (buffer-only) should never be in a consolidation command
+			cmds := queue.GetCommands()
+			for _, cmd := range cmds {
+				for _, c := range cmd.Candidates {
+					Expect(c.Name()).ToNot(Equal(nodes[0].Name),
+						"buffer-only node should not be a consolidation candidate")
+				}
+			}
+			// node1 should still exist (protected by emptiness buffer check)
+			ExpectExists(ctx, env.Client, nodeClaims[0])
+		})
+
+		It("should consolidate a buffer node once buffer pods are cleared", func() {
+			// Node previously had buffer pods, now they're cleared — it becomes
+			// eligible for empty consolidation.
+			ExpectApplied(ctx, env.Client, nodePool, nodeClaim, node)
+			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, env.Clock, nodeStateController, nodeClaimStateController, []*corev1.Node{node}, []*v1.NodeClaim{nodeClaim})
+
+			// First pass: buffer pods present → protected
+			cluster.UpdateBufferPodCounts(map[string]int{
+				node.Spec.ProviderID: 3,
+			})
+			ExpectSingletonReconciled(ctx, disruptionController)
+			Expect(ExpectNodeClaims(ctx, env.Client)).To(HaveLen(1))
+
+			// Second pass: buffer deleted → counts cleared
+			cluster.UpdateBufferPodCounts(map[string]int{})
+			ExpectSingletonReconciled(ctx, disruptionController)
+			ExpectObjectReconciled(ctx, env.Client, queue, nodeClaim)
+			ExpectNodeClaimsCascadeDeletion(ctx, env.Client, nodeClaim)
+
+			Expect(ExpectNodeClaims(ctx, env.Client)).To(HaveLen(0))
+		})
+	})
 	Context("Static NodePool", func() {
 		It("should not consolidate static NodePool nodes", func() {
 			staticNp := test.StaticNodePool(v1.NodePool{
 				Spec: v1.NodePoolSpec{
-					Replicas:   lo.ToPtr(int64(2)), // Static nodepool with 2 desired replica
+					Replicas:   new(int64(2)), // Static nodepool with 2 desired replica
 					Disruption: v1.Disruption{},
 				},
 			})

@@ -18,7 +18,6 @@ package common
 
 import (
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -38,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 
+	autoscalingv1beta1 "sigs.k8s.io/karpenter/pkg/apis/autoscaling/v1beta1"
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/apis/v1alpha1"
 	"sigs.k8s.io/karpenter/pkg/test"
@@ -56,21 +56,31 @@ var (
 		&v1.NodeClaimList{},
 	}
 	CleanableObjects = []client.Object{
-		&corev1.Pod{},
-		&appsv1.Deployment{},
-		&appsv1.DaemonSet{},
-		&policyv1.PodDisruptionBudget{},
-		&corev1.PersistentVolumeClaim{},
-		&corev1.PersistentVolume{},
-		&storagev1.StorageClass{},
-		&v1.NodePool{},
-		&corev1.LimitRange{},
-		&schedulingv1.PriorityClass{},
-		&corev1.Node{},
-		&v1.NodeClaim{},
-		&v1alpha1.NodeOverlay{},
+		// admissionregistration.k8s.io
 		&admissionregistrationv1.ValidatingAdmissionPolicy{},
 		&admissionregistrationv1.ValidatingAdmissionPolicyBinding{},
+		// apps
+		&appsv1.DaemonSet{},
+		&appsv1.Deployment{},
+		// autoscaling.x-k8s.io
+		&autoscalingv1beta1.CapacityBuffer{},
+		// core
+		&corev1.LimitRange{},
+		&corev1.Node{},
+		&corev1.PersistentVolume{},
+		&corev1.PersistentVolumeClaim{},
+		&corev1.Pod{},
+		&corev1.PodTemplate{},
+		// karpenter.sh
+		&v1.NodeClaim{},
+		&v1.NodePool{},
+		&v1alpha1.NodeOverlay{},
+		// policy
+		&policyv1.PodDisruptionBudget{},
+		// scheduling.k8s.io
+		&schedulingv1.PriorityClass{},
+		// storage.k8s.io
+		&storagev1.StorageClass{},
 	}
 )
 
@@ -96,15 +106,6 @@ func (env *Environment) ExpectCleanCluster() {
 	var pods corev1.PodList
 	Expect(env.Client.List(env.Context, &pods)).To(Succeed())
 	for i := range pods.Items {
-		// UPSTREAM: <carry>: ignore any pods that are pending to be scheduled in some openshift-* namespace
-		// This is a workaround for the fact that OpenShift core component pods sometimes start/restart and become pending.
-		// Upstream test setup forces all nodes to either be tainted or unschedulable, preventing these pods from being scheduled.
-		//
-		// Note: this only matters on single node infrastructure (e.g. 1 node with both control-plane and worker node roles)
-		// For regular infrastructure topology, the pods would simply just schedule to the already tainted control plane nodes.
-		if strings.HasPrefix(pods.Items[i].Namespace, "openshift") {
-			continue
-		}
 		Expect(pod.IsProvisionable(&pods.Items[i])).To(BeFalse(),
 			fmt.Sprintf("expected to have no provisionable pods, found %s/%s", pods.Items[i].Namespace, pods.Items[i].Name))
 		Expect(pods.Items[i].Namespace).ToNot(Equal("default"),
@@ -181,7 +182,7 @@ func (env *Environment) CleanupObjects(cleanableObjects ...client.Object) {
 					g.Expect(env.ExpectTestingFinalizerRemoved(&metaList.Items[i])).To(Succeed())
 					g.Expect(client.IgnoreNotFound(env.Client.Delete(env, &metaList.Items[i],
 						client.PropagationPolicy(metav1.DeletePropagationForeground),
-						&client.DeleteOptions{GracePeriodSeconds: lo.ToPtr(int64(0))}))).To(Succeed())
+						&client.DeleteOptions{GracePeriodSeconds: new(int64(0))}))).To(Succeed())
 				})
 				// If the deletes eventually succeed, we should have no elements here at the end of the test
 				g.Expect(env.Client.List(env, metaList, client.HasLabels([]string{test.DiscoveryLabel}), client.Limit(1))).To(Succeed())
