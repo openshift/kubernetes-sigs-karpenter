@@ -42,13 +42,12 @@ func BenchmarkStoreApply(b *testing.B) {
 	for _, family := range families {
 		for _, size := range sizes {
 			name := family + "." + size
-			instanceTypes = append(instanceTypes, fake.NewInstanceType(fake.InstanceTypeOptions{
-				Name: name,
-				Resources: corev1.ResourceList{
+			instanceTypes = append(instanceTypes, fake.NewInstanceType(name,
+				fake.WithResources(corev1.ResourceList{
 					corev1.ResourceCPU:    resource.MustParse("4"),
 					corev1.ResourceMemory: resource.MustParse("16Gi"),
-				},
-			}))
+				}),
+			))
 		}
 	}
 
@@ -93,9 +92,7 @@ func BenchmarkStoreApply(b *testing.B) {
 func BenchmarkStoreApplyNoOverlay(b *testing.B) {
 	instanceTypes := make([]*cloudprovider.InstanceType, 0, 200)
 	for range 200 {
-		instanceTypes = append(instanceTypes, fake.NewInstanceType(fake.InstanceTypeOptions{
-			Name: "m5.large",
-		}))
+		instanceTypes = append(instanceTypes, fake.NewInstanceType("m5.large"))
 	}
 
 	store := newInternalInstanceTypeStore()
@@ -115,9 +112,7 @@ func BenchmarkStoreApplyNoOverlay(b *testing.B) {
 func BenchmarkStoreApplyPriceOnly(b *testing.B) {
 	instanceTypes := make([]*cloudprovider.InstanceType, 0, 200)
 	for range 200 {
-		instanceTypes = append(instanceTypes, fake.NewInstanceType(fake.InstanceTypeOptions{
-			Name: "m5.large",
-		}))
+		instanceTypes = append(instanceTypes, fake.NewInstanceType("m5.large"))
 	}
 
 	store := newInternalInstanceTypeStore()
@@ -151,9 +146,7 @@ func BenchmarkStoreApplyPriceOnly(b *testing.B) {
 func BenchmarkStoreApplyCapacityOnly(b *testing.B) {
 	instanceTypes := make([]*cloudprovider.InstanceType, 0, 200)
 	for range 200 {
-		instanceTypes = append(instanceTypes, fake.NewInstanceType(fake.InstanceTypeOptions{
-			Name: "m5.large",
-		}))
+		instanceTypes = append(instanceTypes, fake.NewInstanceType("m5.large"))
 	}
 
 	store := newInternalInstanceTypeStore()
@@ -184,9 +177,7 @@ func BenchmarkStoreApplyCapacityOnly(b *testing.B) {
 func BenchmarkStoreApplyBothOverlays(b *testing.B) {
 	instanceTypes := make([]*cloudprovider.InstanceType, 0, 200)
 	for range 200 {
-		instanceTypes = append(instanceTypes, fake.NewInstanceType(fake.InstanceTypeOptions{
-			Name: "m5.large",
-		}))
+		instanceTypes = append(instanceTypes, fake.NewInstanceType("m5.large"))
 	}
 
 	store := newInternalInstanceTypeStore()
@@ -231,9 +222,7 @@ func BenchmarkStoreApplyAllScenario(b *testing.B) {
 		for _, size := range sizes {
 			for range 5 { // Create multiple instances to reach ~200
 				name := family + "." + size
-				instanceTypes = append(instanceTypes, fake.NewInstanceType(fake.InstanceTypeOptions{
-					Name: name,
-				}))
+				instanceTypes = append(instanceTypes, fake.NewInstanceType(name))
 			}
 		}
 	}
@@ -324,9 +313,7 @@ func BenchmarkNodeOverlayControllerScenario(b *testing.B) {
 		for _, size := range sizes {
 			for range 4 { // ~216 instance types total
 				name := family + "." + size
-				instanceTypes = append(instanceTypes, fake.NewInstanceType(fake.InstanceTypeOptions{
-					Name: name,
-				}))
+				instanceTypes = append(instanceTypes, fake.NewInstanceType(name))
 			}
 		}
 	}

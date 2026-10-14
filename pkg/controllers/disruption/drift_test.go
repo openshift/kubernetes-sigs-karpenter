@@ -17,6 +17,7 @@ limitations under the License.
 package disruption_test
 
 import (
+	"strings"
 	"sync"
 	"time"
 
@@ -78,7 +79,7 @@ var _ = Describe("Drift", func() {
 	Context("Metrics", func() {
 		It("should correctly report eligible drifted nodes", func() {
 			eligibleNodesLabels := map[string]string{
-				metrics.ReasonLabel: "drifted",
+				metrics.ReasonLabel: strings.ToLower(string(v1.DisruptionReasonDrifted)),
 			}
 			pod := test.Pod(test.PodOptions{
 				ObjectMeta: metav1.ObjectMeta{
@@ -149,11 +150,11 @@ var _ = Describe("Drift", func() {
 
 			ExpectMetricGaugeValue(disruption.NodePoolAllowedDisruptions, 3, map[string]string{
 				metrics.NodePoolLabel: nodePool.Name,
-				metrics.ReasonLabel:   string(v1.DisruptionReasonDrifted),
+				metrics.ReasonLabel:   strings.ToLower(string(v1.DisruptionReasonDrifted)),
 			})
 			ExpectMetricGaugeValue(disruption.NodePoolNodesConsumingBudgets, 0, map[string]string{
 				metrics.NodePoolLabel: nodePool.Name,
-				metrics.ReasonLabel:   string(v1.DisruptionReasonDrifted),
+				metrics.ReasonLabel:   strings.ToLower(string(v1.DisruptionReasonDrifted)),
 			})
 		})
 		It("should disrupt 3 nodes, taking into account commands in progress", func() {
@@ -310,7 +311,7 @@ var _ = Describe("Drift", func() {
 			for _, np := range nps {
 				ExpectMetricGaugeValue(disruption.NodePoolAllowedDisruptions, 1, map[string]string{
 					metrics.NodePoolLabel: np.Name,
-					metrics.ReasonLabel:   string(v1.DisruptionReasonDrifted),
+					metrics.ReasonLabel:   strings.ToLower(string(v1.DisruptionReasonDrifted)),
 				})
 			}
 
@@ -323,16 +324,16 @@ var _ = Describe("Drift", func() {
 			Expect(len(ExpectNodeClaims(ctx, env.Client))).To(Equal(20))
 			// These nodes will disrupt because of Drift instead of Emptiness because they are not marked consolidatable
 			ExpectMetricCounterValue(disruption.DecisionsPerformedTotal, 10, map[string]string{
-				metrics.ReasonLabel: "drifted",
+				metrics.ReasonLabel: strings.ToLower(string(v1.DisruptionReasonDrifted)),
 			})
 			for _, np := range nps {
 				ExpectMetricCounterValue(disruption.NodepoolDecisionsPerformed, 1, map[string]string{
 					metrics.NodePoolLabel: np.Name,
-					metrics.ReasonLabel:   "drifted",
+					metrics.ReasonLabel:   strings.ToLower(string(v1.DisruptionReasonDrifted)),
 				})
 				ExpectMetricGaugeValue(disruption.NodePoolNodesConsumingBudgets, 0, map[string]string{
 					metrics.NodePoolLabel: nodePool.Name,
-					metrics.ReasonLabel:   string(v1.DisruptionReasonDrifted),
+					metrics.ReasonLabel:   strings.ToLower(string(v1.DisruptionReasonDrifted)),
 				})
 			}
 		})
@@ -824,7 +825,7 @@ var _ = Describe("Drift", func() {
 			Expect(ExpectNodes(ctx, env.Client)).To(HaveLen(0))
 			ExpectNotFound(ctx, env.Client, nodeClaim, node)
 			ExpectMetricGaugeValue(disruption.EligibleNodes, 1, map[string]string{
-				metrics.ReasonLabel: "drifted",
+				metrics.ReasonLabel: strings.ToLower(string(v1.DisruptionReasonDrifted)),
 			})
 		})
 		It("should drift empty nodes before non-empty nodes", func() {
@@ -890,13 +891,13 @@ var _ = Describe("Drift", func() {
 			ExpectExists(ctx, env.Client, node)
 			ExpectNotFound(ctx, env.Client, nodeClaim2, node2)
 			ExpectMetricGaugeValue(disruption.EligibleNodes, 2, map[string]string{
-				metrics.ReasonLabel: "drifted",
+				metrics.ReasonLabel: strings.ToLower(string(v1.DisruptionReasonDrifted)),
 			})
 			ExpectMetricCounterValue(disruption.DecisionsPerformedTotal, 1, map[string]string{
-				metrics.ReasonLabel: "drifted",
+				metrics.ReasonLabel: strings.ToLower(string(v1.DisruptionReasonDrifted)),
 			})
 		})
-		It("should give emptiness priority to delete drifted nodes when they are empty and consolidatable", func() {
+		It("should delete drifted nodes when they are empty and consolidatable", func() {
 			nodeClaim.StatusConditions().SetTrue(v1.ConditionTypeDrifted)
 			nodeClaim.StatusConditions().SetTrue(v1.ConditionTypeConsolidatable)
 			ExpectApplied(ctx, env.Client, nodePool, nodeClaim, node)
@@ -909,12 +910,12 @@ var _ = Describe("Drift", func() {
 			// Cascade any deletion of the nodeClaim to the node
 			ExpectNodeClaimsCascadeDeletion(ctx, env.Client, nodeClaim)
 
-			// we should delete the empty node
+			// we should delete the empty node via drift (drift runs before consolidation)
 			Expect(ExpectNodeClaims(ctx, env.Client)).To(HaveLen(0))
 			Expect(ExpectNodes(ctx, env.Client)).To(HaveLen(0))
 			ExpectNotFound(ctx, env.Client, nodeClaim, node)
 			ExpectMetricGaugeValue(disruption.EligibleNodes, 1, map[string]string{
-				metrics.ReasonLabel: "empty",
+				metrics.ReasonLabel: strings.ToLower(string(v1.DisruptionReasonDrifted)),
 			})
 		})
 		It("should untaint nodes when drift replacement fails", func() {
@@ -966,27 +967,21 @@ var _ = Describe("Drift", func() {
 			Expect(node.Spec.Taints).ToNot(ContainElement(v1.DisruptedNoScheduleTaint))
 		})
 		It("can replace drifted nodes with multiple nodes", func() {
-			currentInstance := fake.NewInstanceType(fake.InstanceTypeOptions{
-				Name: "current-on-demand",
-				Offerings: []*cloudprovider.Offering{
-					{
-						Available:    false,
-						Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeOnDemand, corev1.LabelTopologyZone: "test-zone-1a"}),
-						Price:        0.5,
-					},
-				},
-			})
-			replacementInstance := fake.NewInstanceType(fake.InstanceTypeOptions{
-				Name: "replacement-on-demand",
-				Offerings: []*cloudprovider.Offering{
-					{
-						Available:    true,
-						Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeOnDemand, corev1.LabelTopologyZone: "test-zone-1a"}),
-						Price:        0.3,
-					},
-				},
-				Resources: map[corev1.ResourceName]resource.Quantity{corev1.ResourceCPU: resource.MustParse("3")},
-			})
+			currentInstance := fake.NewInstanceType("current-on-demand",
+				fake.WithOfferings(cloudprovider.Offering{
+					Available:    false,
+					Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeOnDemand, corev1.LabelTopologyZone: "test-zone-1a"}),
+					Price:        0.5,
+				}),
+			)
+			replacementInstance := fake.NewInstanceType("replacement-on-demand",
+				fake.WithOfferings(cloudprovider.Offering{
+					Available:    true,
+					Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeOnDemand, corev1.LabelTopologyZone: "test-zone-1a"}),
+					Price:        0.3,
+				}),
+				fake.WithResources(corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("3")}),
+			)
 			cloudProvider.InstanceTypes = []*cloudprovider.InstanceType{
 				currentInstance,
 				replacementInstance,
