@@ -17,8 +17,6 @@ limitations under the License.
 package integration_test
 
 import (
-	"os"
-	"strconv"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -35,18 +33,8 @@ import (
 )
 
 var _ = Describe("Performance", func() {
-	var replicas int
+	var replicas = 100
 
-	BeforeEach(func() {
-		replicas = 100
-
-		if value, ok := os.LookupEnv("KARPENTER_E2E_PERFORMANCE_REPLICAS"); ok {
-			parsed, err := strconv.ParseInt(value, 10, 32)
-			Expect(err).ToNot(HaveOccurred(), "KARPENTER_E2E_PERFORMANCE_REPLICAS must be a positive 32-bit integer")
-			Expect(parsed).To(BeNumerically(">", 0), "KARPENTER_E2E_PERFORMANCE_REPLICAS must be positive")
-			replicas = int(parsed)
-		}
-	})
 	Context("Provisioning", func() {
 		It("should do simple provisioning", func() {
 			deployment := test.Deployment(test.DeploymentOptions{
