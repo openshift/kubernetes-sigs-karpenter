@@ -6,9 +6,10 @@ export KIND_CLUSTER_NAME ?= test-cluster
 HELM_OPTS ?= --set logLevel=debug \
 			--set controller.resources.requests.cpu=1 \
 			--set controller.resources.requests.memory=1Gi \
-			--set controller.resources.limits.cpu=1 \
-			--set controller.resources.limits.memory=1Gi \
+			--set controller.resources.limits.cpu=2 \
+			--set controller.resources.limits.memory=2Gi \
 			--set settings.featureGates.nodeRepair=true \
+			--set settings.featureGates.capacityBuffer=true \
 			--set settings.featureGates.staticCapacity=true
 
 help: ## Display help
@@ -194,4 +195,4 @@ openshift-toolchain: ## Install developer toolchain for OpenShift CI.
 gen_instance_types:
 	go run kwok/tools/gen_instance_types.go > kwok/cloudprovider/instance_types.json
 
-.PHONY: help presubmit install-kwok uninstall-kwok build apply delete test test-memory test-dra e2etest-dra benchmark deflake vulncheck licenses verify download gen_instance_types setup-kind-dra delete-kind-dra apply-with-kind-dra
+.PHONY: help presubmit install-kwok uninstall-kwok build apply delete test test-memory test-dra e2etest-dra benchmark deflake vulncheck licenses verify download gen_instance_types setup-kind setup-kind-dra delete-kind-dra apply-with-kind-dra
