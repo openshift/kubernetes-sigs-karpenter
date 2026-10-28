@@ -145,6 +145,59 @@ var _ = Describe("CEL/Validation", func() {
 			nodePool.Spec.Disruption.ConsolidationPolicy = ConsolidationPolicyWhenEmpty
 			Expect(env.Client.Create(ctx, nodePool)).To(Succeed())
 		})
+		It("should default consolidateAfter to '0s' when omitted on a dynamic NodePool", func() {
+			u := lo.Must(runtime.DefaultUnstructuredConverter.ToUnstructured(nodePool))
+			unstructured.RemoveNestedField(u, "spec", "disruption", "consolidateAfter")
+			obj := &unstructured.Unstructured{}
+			lo.Must0(runtime.DefaultUnstructuredConverter.FromUnstructured(u, obj))
+
+			Expect(env.Client.Create(ctx, obj)).To(Succeed())
+			value, ok, err := unstructured.NestedString(obj.Object, "spec", "disruption", "consolidateAfter")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeTrue())
+			Expect(value).To(Equal("0s"))
+		})
+		DescribeTable("should succeed on a valid consolidationPolicy", func(value string) {
+			raw := lo.Must(runtime.DefaultUnstructuredConverter.ToUnstructured(nodePool))
+			lo.Must0(unstructured.SetNestedField(raw, value, "spec", "disruption", "consolidationPolicy"))
+			unstructuredPool := &unstructured.Unstructured{}
+			lo.Must0(runtime.DefaultUnstructuredConverter.FromUnstructured(raw, unstructuredPool))
+
+			Expect(env.Client.Create(ctx, unstructuredPool)).To(Succeed())
+		},
+			Entry("WhenEmpty", "WhenEmpty"),
+			Entry("WhenEmptyOrUnderutilized", "WhenEmptyOrUnderutilized"),
+			Entry("Balanced", "Balanced"),
+		)
+		DescribeTable("should fail on an invalid consolidationPolicy", func(value string) {
+			raw := lo.Must(runtime.DefaultUnstructuredConverter.ToUnstructured(nodePool))
+			lo.Must0(unstructured.SetNestedField(raw, value, "spec", "disruption", "consolidationPolicy"))
+			unstructuredPool := &unstructured.Unstructured{}
+			lo.Must0(runtime.DefaultUnstructuredConverter.FromUnstructured(raw, unstructuredPool))
+
+			Expect(env.Client.Create(ctx, unstructuredPool)).To(Not(Succeed()))
+		},
+			Entry("quoted 1", "1"),
+			Entry("quoted 2", "2"),
+			Entry("quoted 3", "3"),
+			Entry("level 0", "0"),
+			Entry("level 4", "4"),
+			Entry("level 10", "10"),
+			Entry("lowercase balanced", "balanced"),
+			Entry("lowercase whenempty", "whenempty"),
+			Entry("empty string", ""),
+			Entry("WhenUnderutilized", "WhenUnderutilized"),
+			Entry("arbitrary string", "foo"),
+		)
+		DescribeTable("should pass RuntimeValidate for valid consolidationPolicy",
+			func(policy ConsolidationPolicy) {
+				nodePool.Spec.Disruption.ConsolidationPolicy = policy
+				Expect(nodePool.RuntimeValidate(ctx)).To(Succeed())
+			},
+			Entry("WhenEmpty", ConsolidationPolicyWhenEmpty),
+			Entry("WhenEmptyOrUnderutilized", ConsolidationPolicyWhenEmptyOrUnderutilized),
+			Entry("Balanced", ConsolidationPolicyBalanced),
+		)
 		It("should fail when creating a budget with an invalid cron", func() {
 			nodePool.Spec.Disruption.Budgets = []Budget{{
 				Nodes:    "10",
@@ -282,6 +335,7 @@ var _ = Describe("CEL/Validation", func() {
 			Entry("should allow disruption reason Drifted", DisruptionReasonDrifted),
 			Entry("should allow disruption reason Underutilized", DisruptionReasonUnderutilized),
 			Entry("should allow disruption reason Empty", DisruptionReasonEmpty),
+			Entry("should allow disruption reason Unhealthy", DisruptionReasonUnhealthy),
 		)
 
 		DescribeTable("should fail when creating a budget with invalid reasons", func(reason string) {
@@ -849,6 +903,16 @@ var _ = Describe("CEL/Validation", func() {
 				np.Spec.Template.Spec.TerminationGracePeriod = &metav1.Duration{Duration: time.Second * 300}
 			}),
 		)
+
+		It("should succeed when consolidateAfter is omitted on a static NodePool", func() {
+			u := lo.Must(runtime.DefaultUnstructuredConverter.ToUnstructured(nodePool))
+			lo.Must0(unstructured.SetNestedField(u, int64(3), "spec", "replicas"))
+			unstructured.RemoveNestedField(u, "spec", "disruption", "consolidateAfter")
+			obj := &unstructured.Unstructured{}
+			lo.Must0(runtime.DefaultUnstructuredConverter.FromUnstructured(u, obj))
+
+			Expect(env.Client.Create(ctx, obj)).To(Succeed())
+		})
 
 		Context("Update Scenarios", func() {
 			It("should succeed when increasing replicas in a NodePool", func() {
