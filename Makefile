@@ -6,9 +6,10 @@ export KIND_CLUSTER_NAME ?= test-cluster
 HELM_OPTS ?= --set logLevel=debug \
 			--set controller.resources.requests.cpu=1 \
 			--set controller.resources.requests.memory=1Gi \
-			--set controller.resources.limits.cpu=1 \
-			--set controller.resources.limits.memory=1Gi \
+			--set controller.resources.limits.cpu=2 \
+			--set controller.resources.limits.memory=2Gi \
 			--set settings.featureGates.nodeRepair=true \
+			--set settings.featureGates.capacityBuffer=true \
 			--set settings.featureGates.staticCapacity=true
 
 help: ## Display help
@@ -63,8 +64,30 @@ apply-with-openshift: openshift-verify build-with-openshift ## Deploy the kwok c
 		--set-string controller.env[0].name=ENABLE_PROFILING \
 		--set-string controller.env[0].value=true
 
+get-kind-image: ## Extract the actual KWOK image repository from Kind cluster
+	$(eval IMG_REPOSITORY=$(shell docker exec $(KIND_CLUSTER_NAME)-control-plane crictl images | grep "kind.local/kwok" | awk '{print $$1}' | head -1))
+	$(eval IMG_TAG=latest)
+	@echo "Using Repository: $(IMG_REPOSITORY), Tag: $(IMG_TAG)"
+
+setup-kind: ## Setup a Kind cluster for the e2e suites, with the kube-scheduler configuration they expect
+	-kind delete cluster --name $(KIND_CLUSTER_NAME)
+	kind create cluster --name $(KIND_CLUSTER_NAME) --config hack/kind/cluster.yaml
+	kubectl taint nodes $(KIND_CLUSTER_NAME)-control-plane CriticalAddonsOnly:NoSchedule
+
+setup-kind-dra: ## Setup Kind cluster for DRA testing
+	-kind delete cluster --name $(KIND_CLUSTER_NAME)
+	kind create cluster --image kindest/node:v1.34.0 --name $(KIND_CLUSTER_NAME)
+	KWOK_REPO=kind.local KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) $(MAKE) install-kwok
+	KWOK_REPO=kind.local KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) $(MAKE) build-with-kind
+	KWOK_REPO=kind.local KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) $(MAKE) apply-with-kind-dra
+	kubectl taint nodes $(KIND_CLUSTER_NAME)-control-plane CriticalAddonsOnly=true:NoSchedule --overwrite
+	kubectl create namespace karpenter --dry-run=client -o yaml | kubectl apply -f -
+
+delete-kind-dra: ## Delete DRA Kind cluster
+	kind delete cluster --name $(KIND_CLUSTER_NAME)
+
 # TODO(jkyros): This got squashed out accidentally once before, this needs to stay in unless
-# we decide to explicitly take it out, so watch for it :) 
+# we decide to explicitly take it out, so watch for it :)
 JUNIT_REPORT := $(if $(ARTIFACT_DIR), --ginkgo.junit-report="$(ARTIFACT_DIR)/junit_report.xml")
 e2etests: ## Run the e2e suite against your local cluster
 	cd test && go test \
@@ -194,4 +217,4 @@ openshift-toolchain: ## Install developer toolchain for OpenShift CI.
 gen_instance_types:
 	go run kwok/tools/gen_instance_types.go > kwok/cloudprovider/instance_types.json
 
-.PHONY: help presubmit install-kwok uninstall-kwok build apply delete test test-memory test-dra e2etest-dra benchmark deflake vulncheck licenses verify download gen_instance_types setup-kind-dra delete-kind-dra apply-with-kind-dra
+.PHONY: help presubmit install-kwok uninstall-kwok build apply delete test test-memory test-dra e2etest-dra benchmark deflake vulncheck licenses verify download gen_instance_types setup-kind setup-kind-dra delete-kind-dra apply-with-kind-dra

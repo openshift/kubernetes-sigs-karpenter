@@ -280,6 +280,21 @@ var _ = Describe("Volume Usage/Limits", func() {
 			csiProvider: sets.New("test"),
 		})).ToNot(BeNil())
 	})
+	DescribeTable("should treat a published driver without an attachment limit as unbounded",
+		func(allocatable *storagev1.VolumeNodeResources) {
+			csiNode.Spec.Drivers[0].Allocatable = allocatable
+			ExpectApplied(ctx, env.Client, node, csiNode)
+			ExpectReconcileSucceeded(ctx, nodeController, client.ObjectKeyFromObject(node))
+
+			volumeUsage := ExpectStateNodeExists(cluster, node).VolumeUsage()
+			volumeUsage.AddFallbackLimit(csiProvider, 1)
+			Expect(volumeUsage.ExceedsLimits(scheduling.Volumes{
+				csiProvider: sets.New("volume-a", "volume-b"),
+			})).To(Succeed())
+		},
+		Entry("without allocatable data", nil),
+		Entry("without an allocatable count", &storagev1.VolumeNodeResources{}),
+	)
 	It("should maintain the volume usage state when receiving NodeClaim updates", func() {
 		ExpectApplied(ctx, env.Client, sc, nodeClaim, node, csiNode)
 		for range 10 {
@@ -2987,3 +3002,57 @@ func ExpectStateNodeCount(comparator string, count int) int {
 	Expect(c).To(BeNumerically(comparator, count))
 	return c
 }
+
+var _ = Describe("Buffer Pod Counts", func() {
+	It("should return false for unknown providerIDs", func() {
+		Expect(cluster.HasBufferPods("unknown-provider-id")).To(BeFalse())
+		Expect(cluster.BufferPodCount("unknown-provider-id")).To(Equal(0))
+	})
+
+	It("should track buffer pods after UpdateBufferPodCounts", func() {
+		cluster.UpdateBufferPodCounts(map[string]int{
+			"provider-a": 3,
+			"provider-b": 1,
+		})
+		Expect(cluster.HasBufferPods("provider-a")).To(BeTrue())
+		Expect(cluster.BufferPodCount("provider-a")).To(Equal(3))
+		Expect(cluster.HasBufferPods("provider-b")).To(BeTrue())
+		Expect(cluster.BufferPodCount("provider-b")).To(Equal(1))
+		Expect(cluster.HasBufferPods("provider-c")).To(BeFalse())
+	})
+
+	It("should clear old entries when UpdateBufferPodCounts is called with new map", func() {
+		cluster.UpdateBufferPodCounts(map[string]int{
+			"provider-a": 5,
+		})
+		Expect(cluster.HasBufferPods("provider-a")).To(BeTrue())
+
+		// Update with a map that doesn't contain provider-a
+		cluster.UpdateBufferPodCounts(map[string]int{
+			"provider-b": 2,
+		})
+		Expect(cluster.HasBufferPods("provider-a")).To(BeFalse())
+		Expect(cluster.BufferPodCount("provider-a")).To(Equal(0))
+		Expect(cluster.HasBufferPods("provider-b")).To(BeTrue())
+		Expect(cluster.BufferPodCount("provider-b")).To(Equal(2))
+	})
+
+	It("should clear all entries when called with empty map", func() {
+		cluster.UpdateBufferPodCounts(map[string]int{
+			"provider-a": 3,
+			"provider-b": 1,
+		})
+		cluster.UpdateBufferPodCounts(map[string]int{})
+		Expect(cluster.HasBufferPods("provider-a")).To(BeFalse())
+		Expect(cluster.HasBufferPods("provider-b")).To(BeFalse())
+	})
+
+	It("should not store entries with count zero", func() {
+		cluster.UpdateBufferPodCounts(map[string]int{
+			"provider-a": 0,
+			"provider-b": 3,
+		})
+		Expect(cluster.HasBufferPods("provider-a")).To(BeFalse())
+		Expect(cluster.HasBufferPods("provider-b")).To(BeTrue())
+	})
+})

@@ -18,6 +18,7 @@ package disruption_test
 
 import (
 	"strconv"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -30,6 +31,7 @@ import (
 
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/controllers/disruption"
+	"sigs.k8s.io/karpenter/pkg/events"
 	"sigs.k8s.io/karpenter/pkg/metrics"
 	"sigs.k8s.io/karpenter/pkg/test"
 	. "sigs.k8s.io/karpenter/pkg/test/expectations"
@@ -115,7 +117,7 @@ var _ = Describe("StaticDrift", func() {
 			// Should only allow 2 nodes to be disrupted because of budget
 			ExpectMetricGaugeValue(disruption.NodePoolAllowedDisruptions, 2, map[string]string{
 				metrics.NodePoolLabel: nodePool.Name,
-				metrics.ReasonLabel:   string(v1.DisruptionReasonDrifted),
+				metrics.ReasonLabel:   strings.ToLower(string(v1.DisruptionReasonDrifted)),
 			})
 
 			// Verify StateNodePool Has been updated
@@ -137,7 +139,7 @@ var _ = Describe("StaticDrift", func() {
 
 			Expect(len(ExpectNodeClaims(ctx, env.Client))).To(Equal(numNodes))
 			ExpectMetricCounterValue(disruption.DecisionsPerformedTotal, 2, map[string]string{
-				metrics.ReasonLabel: "drifted",
+				metrics.ReasonLabel: strings.ToLower(string(v1.DisruptionReasonDrifted)),
 			})
 		})
 		It("should respect disruption budgets (Nodes Percentage) for static drift", func() {
@@ -174,7 +176,7 @@ var _ = Describe("StaticDrift", func() {
 			// Should only allow 1 nodes to be disrupted because of budget
 			ExpectMetricGaugeValue(disruption.NodePoolAllowedDisruptions, 1, map[string]string{
 				metrics.NodePoolLabel: nodePool.Name,
-				metrics.ReasonLabel:   string(v1.DisruptionReasonDrifted),
+				metrics.ReasonLabel:   strings.ToLower(string(v1.DisruptionReasonDrifted)),
 			})
 
 			// Verify StateNodePool Has been updated
@@ -197,7 +199,7 @@ var _ = Describe("StaticDrift", func() {
 
 			Expect(len(ExpectNodeClaims(ctx, env.Client))).To(Equal(numNodes))
 			ExpectMetricCounterValue(disruption.DecisionsPerformedTotal, 1, map[string]string{
-				metrics.ReasonLabel: "drifted",
+				metrics.ReasonLabel: strings.ToLower(string(v1.DisruptionReasonDrifted)),
 			})
 		})
 		It("should respect budgets for multiple static nodepools", func() {
@@ -309,15 +311,15 @@ var _ = Describe("StaticDrift", func() {
 
 			ExpectMetricGaugeValue(disruption.NodePoolAllowedDisruptions, 1, map[string]string{
 				metrics.NodePoolLabel: nodePool1.Name,
-				metrics.ReasonLabel:   string(v1.DisruptionReasonDrifted),
+				metrics.ReasonLabel:   strings.ToLower(string(v1.DisruptionReasonDrifted)),
 			})
 			ExpectMetricGaugeValue(disruption.NodePoolAllowedDisruptions, 2, map[string]string{
 				metrics.NodePoolLabel: nodePool2.Name,
-				metrics.ReasonLabel:   string(v1.DisruptionReasonDrifted),
+				metrics.ReasonLabel:   strings.ToLower(string(v1.DisruptionReasonDrifted)),
 			})
 			ExpectMetricGaugeValue(disruption.NodePoolAllowedDisruptions, 2, map[string]string{
 				metrics.NodePoolLabel: nodePool3.Name,
-				metrics.ReasonLabel:   string(v1.DisruptionReasonDrifted),
+				metrics.ReasonLabel:   strings.ToLower(string(v1.DisruptionReasonDrifted)),
 			})
 
 			// Verify StateNodePool Has been updated
@@ -355,7 +357,7 @@ var _ = Describe("StaticDrift", func() {
 			Expect(len(ExpectNodeClaims(ctx, env.Client))).To(Equal(len(allNodes)))
 
 			ExpectMetricCounterValue(disruption.DecisionsPerformedTotal, 5, map[string]string{
-				metrics.ReasonLabel: "drifted",
+				metrics.ReasonLabel: strings.ToLower(string(v1.DisruptionReasonDrifted)),
 			})
 		})
 	})
@@ -401,6 +403,8 @@ var _ = Describe("StaticDrift", func() {
 			// Since we cannot acquire limits, we should not have any drifts
 			cmds := queue.GetCommands()
 			Expect(cmds).To(HaveLen(0))
+			// The budget-allowed candidate is reported Blocked rather than silently skipped
+			Expect(recorder.Calls(events.DisruptionBlocked)).To(BeNumerically(">", 0))
 		})
 		It("should drift nodes when we can acquire limits", func() {
 			nodePool.Spec.Replicas = lo.ToPtr(int64(5))
@@ -435,7 +439,7 @@ var _ = Describe("StaticDrift", func() {
 
 			ExpectMetricGaugeValue(disruption.NodePoolAllowedDisruptions, 2, map[string]string{
 				metrics.NodePoolLabel: nodePool.Name,
-				metrics.ReasonLabel:   string(v1.DisruptionReasonDrifted),
+				metrics.ReasonLabel:   strings.ToLower(string(v1.DisruptionReasonDrifted)),
 			})
 
 			// Verify StateNodePool Has been updated
@@ -444,6 +448,7 @@ var _ = Describe("StaticDrift", func() {
 			// Should drift nodes since we can scale up to target
 			cmds := queue.GetCommands()
 			Expect(cmds).To(HaveLen(2))
+			Expect(recorder.Calls(events.DisruptionBlocked)).To(Equal(0))
 			for _, cmd := range cmds {
 				ExpectMakeNewNodeClaimsReady(ctx, env.Client, env.Clock, cluster, cloudProvider, cmd)
 				ExpectObjectReconciled(ctx, env.Client, queue, cmd.Candidates[0].NodeClaim)
@@ -457,7 +462,7 @@ var _ = Describe("StaticDrift", func() {
 
 			Expect(len(ExpectNodeClaims(ctx, env.Client))).To(Equal(2))
 			ExpectMetricCounterValue(disruption.DecisionsPerformedTotal, 2, map[string]string{
-				metrics.ReasonLabel: "drifted",
+				metrics.ReasonLabel: strings.ToLower(string(v1.DisruptionReasonDrifted)),
 			})
 		})
 		It("should drift partially when we can acquire some limits", func() {
@@ -493,7 +498,7 @@ var _ = Describe("StaticDrift", func() {
 
 			ExpectMetricGaugeValue(disruption.NodePoolAllowedDisruptions, 5, map[string]string{
 				metrics.NodePoolLabel: nodePool.Name,
-				metrics.ReasonLabel:   string(v1.DisruptionReasonDrifted),
+				metrics.ReasonLabel:   strings.ToLower(string(v1.DisruptionReasonDrifted)),
 			})
 
 			// Verify StateNodePool Has been updated
@@ -515,7 +520,7 @@ var _ = Describe("StaticDrift", func() {
 
 			Expect(len(ExpectNodeClaims(ctx, env.Client))).To(Equal(5))
 			ExpectMetricCounterValue(disruption.DecisionsPerformedTotal, 2, map[string]string{
-				metrics.ReasonLabel: "drifted",
+				metrics.ReasonLabel: strings.ToLower(string(v1.DisruptionReasonDrifted)),
 			})
 		})
 		It("should keep drifting partially when we can acquire some limits for each reconcile", func() {
@@ -571,7 +576,7 @@ var _ = Describe("StaticDrift", func() {
 
 				Expect(len(ExpectNodeClaims(ctx, env.Client))).To(Equal(5))
 				ExpectMetricCounterValue(disruption.DecisionsPerformedTotal, float64(i+1), map[string]string{
-					metrics.ReasonLabel: "drifted",
+					metrics.ReasonLabel: strings.ToLower(string(v1.DisruptionReasonDrifted)),
 				})
 			}
 		})
@@ -662,7 +667,7 @@ var _ = Describe("StaticDrift", func() {
 
 			Expect(len(ExpectNodeClaims(ctx, env.Client))).To(Equal(1))
 			ExpectMetricCounterValue(disruption.DecisionsPerformedTotal, 1, map[string]string{
-				metrics.ReasonLabel: "drifted",
+				metrics.ReasonLabel: strings.ToLower(string(v1.DisruptionReasonDrifted)),
 			})
 		})
 	})
@@ -778,15 +783,15 @@ var _ = Describe("StaticDrift", func() {
 
 			ExpectMetricGaugeValue(disruption.NodePoolAllowedDisruptions, 2, map[string]string{
 				metrics.NodePoolLabel: nodePool1.Name,
-				metrics.ReasonLabel:   string(v1.DisruptionReasonDrifted),
+				metrics.ReasonLabel:   strings.ToLower(string(v1.DisruptionReasonDrifted)),
 			})
 			ExpectMetricGaugeValue(disruption.NodePoolAllowedDisruptions, 2, map[string]string{
 				metrics.NodePoolLabel: nodePool2.Name,
-				metrics.ReasonLabel:   string(v1.DisruptionReasonDrifted),
+				metrics.ReasonLabel:   strings.ToLower(string(v1.DisruptionReasonDrifted)),
 			})
 			ExpectMetricGaugeValue(disruption.NodePoolAllowedDisruptions, 2, map[string]string{
 				metrics.NodePoolLabel: nodePool3.Name,
-				metrics.ReasonLabel:   string(v1.DisruptionReasonDrifted),
+				metrics.ReasonLabel:   strings.ToLower(string(v1.DisruptionReasonDrifted)),
 			})
 
 			// Execute commands, should drift 4 nodes total
@@ -818,7 +823,7 @@ var _ = Describe("StaticDrift", func() {
 			Expect(len(ExpectNodeClaims(ctx, env.Client))).To(Equal(len(allNodes)))
 
 			ExpectMetricCounterValue(disruption.DecisionsPerformedTotal, 4, map[string]string{
-				metrics.ReasonLabel: "drifted",
+				metrics.ReasonLabel: strings.ToLower(string(v1.DisruptionReasonDrifted)),
 			})
 		})
 	})
