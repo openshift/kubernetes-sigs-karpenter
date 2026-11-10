@@ -39,14 +39,27 @@ type PerformanceReport struct {
 	TotalTime               time.Duration `json:"total_time"`
 	PodsNetChange           int           `json:"change_in_pod_count"`
 	NodesNetChange          int           `json:"change_in_node_count"`
+	PodsDisrupted           int           `json:"pods_disrupted"`
 	TotalReservedCPUUtil    float64       `json:"total_reserved_cpu_utilization"`
 	TotalReservedMemoryUtil float64       `json:"total_reserved_memory_utilization"`
 	ResourceEfficiencyScore float64       `json:"resource_efficiency_score"`
 	PodsPerNode             float64       `json:"pods_per_node"`
 	Rounds                  int           `json:"rounds"`
 	Timestamp               time.Time     `json:"timestamp"`
-	KarpenterMemoryMB       float64       `json:"karpenter_memory_mb"`
-	KarpenterCPUNanos       int64         `json:"karpenter_cpu_nanos"`
-	MemoryProfileData       []byte        `json:"-"` // pprof heap profile at peak memory
-	CPUProfileData          []byte        `json:"-"` // pprof cpu profile at peak
+
+	// Karpenter pod resource usage from Kubernetes Metrics API (container-level)
+	KarpenterP95MemoryMB float64 `json:"karpenter_p95_memory_mb"`
+	KarpenterAvgMemoryMB float64 `json:"karpenter_avg_memory_mb"`
+	KarpenterMaxMemoryMB float64 `json:"karpenter_max_memory_mb"`
+	KarpenterP95HeapMB   float64 `json:"karpenter_p95_heap_mb"`
+	KarpenterAvgHeapMB   float64 `json:"karpenter_avg_heap_mb"`
+	KarpenterMaxHeapMB   float64 `json:"karpenter_max_heap_mb"`
+	KarpenterP95CPUCores float64 `json:"karpenter_p95_cpu_cores"`
+	KarpenterAvgCPUCores float64 `json:"karpenter_avg_cpu_cores"`
+	KarpenterMaxCPUCores float64 `json:"karpenter_max_cpu_cores"`
+	MetricsSampleCount   int     `json:"metrics_sample_count"`
+
+	// pprof debug artifacts (not used for assertions, saved for offline analysis)
+	MemoryProfileData []byte `json:"-"`
+	CPUProfileData    []byte `json:"-"`
 }

@@ -116,7 +116,7 @@ var _ = Describe("Static Deprovisioning Controller", func() {
 	Context("Reconcile", func() {
 		It("should return early if nodepool is not managed by cloud provider", func() {
 			nodePool := test.StaticNodePool()
-			nodePool.Spec.Replicas = lo.ToPtr(int64(1))
+			nodePool.Spec.Replicas = new(int64(1))
 			nodePool.Spec.Template.Spec.NodeClassRef = &v1.NodeClassReference{
 				Group: "test.group",
 				Kind:  "UnmanagedNodeClass",
@@ -159,7 +159,7 @@ var _ = Describe("Static Deprovisioning Controller", func() {
 		})
 		It("should return early if nodepool is being deleted", func() {
 			nodePool := test.StaticNodePool()
-			nodePool.Spec.Replicas = lo.ToPtr(int64(1))
+			nodePool.Spec.Replicas = new(int64(1))
 
 			// Create 2 nodeclaims (more than desired replicas of 1)
 			nodeClaims, nodes := test.NodeClaimsAndNodes(2, v1.NodeClaim{
@@ -196,7 +196,7 @@ var _ = Describe("Static Deprovisioning Controller", func() {
 		})
 		It("should return early if current node count is less than or equal to desired replicas", func() {
 			nodePool := test.StaticNodePool()
-			nodePool.Spec.Replicas = lo.ToPtr(int64(3))
+			nodePool.Spec.Replicas = new(int64(3))
 
 			// Create 2 nodes (less than desired 3)
 			nodeClaims, nodes := test.NodeClaimsAndNodes(2, v1.NodeClaim{
@@ -234,7 +234,7 @@ var _ = Describe("Static Deprovisioning Controller", func() {
 		})
 		It("should only consider running nodeclaims and not deleting nodeclaims", func() {
 			nodePool := test.StaticNodePool()
-			nodePool.Spec.Replicas = lo.ToPtr(int64(1))
+			nodePool.Spec.Replicas = new(int64(1))
 
 			nodeClaims, nodes := test.NodeClaimsAndNodes(4, v1.NodeClaim{
 				ObjectMeta: metav1.ObjectMeta{
@@ -283,7 +283,7 @@ var _ = Describe("Static Deprovisioning Controller", func() {
 		})
 		It("should terminate excess nodeclaims when current count exceeds desired replicas", func() {
 			nodePool := test.StaticNodePool()
-			nodePool.Spec.Replicas = lo.ToPtr(int64(2))
+			nodePool.Spec.Replicas = new(int64(2))
 
 			nodeClaims, nodes := test.NodeClaimsAndNodes(4, v1.NodeClaim{
 				ObjectMeta: metav1.ObjectMeta{
@@ -322,7 +322,7 @@ var _ = Describe("Static Deprovisioning Controller", func() {
 		})
 		It("should handle zero replicas by terminating all nodeclaims", func() {
 			nodePool := test.StaticNodePool()
-			nodePool.Spec.Replicas = lo.ToPtr(int64(0))
+			nodePool.Spec.Replicas = new(int64(0))
 
 			nodeClaims, nodes := test.NodeClaimsAndNodes(3, v1.NodeClaim{
 				ObjectMeta: metav1.ObjectMeta{
@@ -368,7 +368,7 @@ var _ = Describe("Static Deprovisioning Controller", func() {
 		})
 		It("should handle no active nodeclaims gracefully", func() {
 			nodePool := test.StaticNodePool()
-			nodePool.Spec.Replicas = lo.ToPtr(int64(0))
+			nodePool.Spec.Replicas = new(int64(0))
 			ExpectApplied(ctx, env.Client, nodePool)
 
 			// Update cluster state with no nodes
@@ -384,7 +384,7 @@ var _ = Describe("Static Deprovisioning Controller", func() {
 		Context("Failing Scenarios", func() {
 			It("should return error when nodeclaim deletion fails", func() {
 				nodePool := test.StaticNodePool()
-				nodePool.Spec.Replicas = lo.ToPtr(int64(1))
+				nodePool.Spec.Replicas = new(int64(1))
 				ExpectApplied(ctx, env.Client, nodePool)
 
 				failingController := static.NewController(&failingClient{Client: env.Client}, cluster, cloudProvider, env.Clock, recorder)
@@ -437,7 +437,7 @@ var _ = Describe("Static Deprovisioning Controller", func() {
 		Context("Deprovision Candidate Selection", func() {
 			It("should prioritize nodeclaims that have unresolved providerID", func() {
 				nodePool := test.StaticNodePool()
-				nodePool.Spec.Replicas = lo.ToPtr(int64(2))
+				nodePool.Spec.Replicas = new(int64(2))
 
 				nodeClaims, nodes := test.NodeClaimsAndNodes(2, v1.NodeClaim{
 					ObjectMeta: metav1.ObjectMeta{
@@ -512,7 +512,7 @@ var _ = Describe("Static Deprovisioning Controller", func() {
 			})
 			It("should prioritize empty nodes (with only daemonset pods) for termination", func() {
 				nodePool := test.StaticNodePool()
-				nodePool.Spec.Replicas = lo.ToPtr(int64(2))
+				nodePool.Spec.Replicas = new(int64(2))
 
 				nodeClaims, nodes := test.NodeClaimsAndNodes(4, v1.NodeClaim{
 					ObjectMeta: metav1.ObjectMeta{
@@ -578,7 +578,7 @@ var _ = Describe("Static Deprovisioning Controller", func() {
 			})
 			It("should terminate non-empty nodes when empty nodes are insufficient", func() {
 				nodePool := test.StaticNodePool()
-				nodePool.Spec.Replicas = lo.ToPtr(int64(1))
+				nodePool.Spec.Replicas = new(int64(1))
 
 				nodeClaims, nodes := test.NodeClaimsAndNodes(4, v1.NodeClaim{
 					ObjectMeta: metav1.ObjectMeta{
@@ -649,7 +649,7 @@ var _ = Describe("Static Deprovisioning Controller", func() {
 
 				BeforeEach(func() {
 					nodePool = test.StaticNodePool()
-					nodePool.Spec.Replicas = lo.ToPtr(int64(8))
+					nodePool.Spec.Replicas = new(int64(8))
 					ExpectApplied(ctx, env.Client, nodePool)
 
 					nodes = nil
@@ -745,7 +745,7 @@ var _ = Describe("Static Deprovisioning Controller", func() {
 				})
 				DescribeTable("scales down in disruption cost order",
 					func(replicas int64, expectIdx []int) {
-						nodePool.Spec.Replicas = lo.ToPtr(replicas)
+						nodePool.Spec.Replicas = new(replicas)
 						ExpectApplied(ctx, env.Client, nodePool)
 						ExpectStateNodePoolCount(cluster, nodePool.Name, 8, 0, 0)
 
@@ -770,12 +770,12 @@ var _ = Describe("Static Deprovisioning Controller", func() {
 		Context("Helper Functions", func() {
 			Describe("hasNodePoolReplicaOrStatusChanged", func() {
 				It("should detect replica changes", func() {
-					old := &v1.NodePool{Spec: v1.NodePoolSpec{Replicas: lo.ToPtr(int64(5))}}
-					new := &v1.NodePool{Spec: v1.NodePoolSpec{Replicas: lo.ToPtr(int64(10))}}
+					old := &v1.NodePool{Spec: v1.NodePoolSpec{Replicas: new(int64(5))}}
+					new := &v1.NodePool{Spec: v1.NodePoolSpec{Replicas: new(int64(10))}}
 					Expect(static.HasNodePoolReplicaCountChanged(old, new)).To(BeTrue())
 				})
 				It("should return false for identical replicas", func() {
-					old := &v1.NodePool{Spec: v1.NodePoolSpec{Replicas: lo.ToPtr(int64(5))}}
+					old := &v1.NodePool{Spec: v1.NodePoolSpec{Replicas: new(int64(5))}}
 					new := old
 					Expect(static.HasNodePoolReplicaCountChanged(old, new)).To(BeFalse())
 				})

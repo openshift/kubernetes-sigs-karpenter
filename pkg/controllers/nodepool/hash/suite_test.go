@@ -21,8 +21,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samber/lo"
-
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -141,7 +139,7 @@ var _ = Describe("Static Drift Hash", func() {
 			{Key: corev1.LabelTopologyZone, Operator: corev1.NodeSelectorOpGt, Values: []string{"1"}},
 			{Key: corev1.LabelTopologyZone, Operator: corev1.NodeSelectorOpLt, Values: []string{"1"}},
 		}
-		nodePool.Spec.Weight = lo.ToPtr(int32(80))
+		nodePool.Spec.Weight = new(int32(80))
 		ExpectApplied(ctx, env.Client, nodePool)
 		ExpectObjectReconciled(ctx, env.Client, nodePoolController, nodePool)
 		nodePool = ExpectExists(ctx, env.Client, nodePool)

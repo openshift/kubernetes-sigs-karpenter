@@ -74,7 +74,7 @@ var _ = BeforeSuite(func() {
 
 	cloudProvider = fake.NewCloudProvider()
 	recorder = test.NewEventRecorder()
-	queue = terminator.NewQueue(env.Client, recorder)
+	queue = terminator.NewQueue(env.Clock, env.Client, recorder)
 	terminationController = termination.NewController(env.Clock, env.Client, cloudProvider, terminator.NewTerminator(env.Clock, env.Client, queue, recorder), recorder)
 })
 
@@ -90,7 +90,7 @@ var _ = Describe("Termination", func() {
 	BeforeEach(func() {
 		env.Clock.SetTime(time.Now())
 		cloudProvider.Reset()
-		*queue = lo.FromPtr(terminator.NewQueue(env.Client, recorder))
+		*queue = lo.FromPtr(terminator.NewQueue(env.Clock, env.Client, recorder))
 
 		nodePool = test.NodePool()
 		nodeClaim, node = test.NodeClaimAndNode(v1.NodeClaim{ObjectMeta: metav1.ObjectMeta{Finalizers: []string{v1.TerminationFinalizer}}})
@@ -210,7 +210,7 @@ var _ = Describe("Termination", func() {
 			// Create a fully blocking PDB to prevent the node from being deleted before we can observe its labels
 			pdb := test.PodDisruptionBudget(test.PDBOptions{
 				Labels:         labels,
-				MaxUnavailable: lo.ToPtr(intstr.FromInt(0)),
+				MaxUnavailable: new(intstr.FromInt(0)),
 			})
 
 			ExpectApplied(ctx, env.Client, node, nodeClaim, pod, pdb)
@@ -424,8 +424,8 @@ var _ = Describe("Termination", func() {
 				Kind:               "DaemonSet",
 				Name:               daemonEvict.Name,
 				UID:                daemonEvict.UID,
-				Controller:         lo.ToPtr(true),
-				BlockOwnerDeletion: lo.ToPtr(true),
+				Controller:         new(true),
+				BlockOwnerDeletion: new(true),
 			}}}})
 			podNodeCritical := test.Pod(test.PodOptions{NodeName: node.Name, PriorityClassName: "system-node-critical", ObjectMeta: metav1.ObjectMeta{OwnerReferences: defaultOwnerRefs}})
 			podClusterCritical := test.Pod(test.PodOptions{NodeName: node.Name, PriorityClassName: "system-cluster-critical", ObjectMeta: metav1.ObjectMeta{OwnerReferences: defaultOwnerRefs}})
@@ -434,16 +434,16 @@ var _ = Describe("Termination", func() {
 				Kind:               "DaemonSet",
 				Name:               daemonNodeCritical.Name,
 				UID:                daemonNodeCritical.UID,
-				Controller:         lo.ToPtr(true),
-				BlockOwnerDeletion: lo.ToPtr(true),
+				Controller:         new(true),
+				BlockOwnerDeletion: new(true),
 			}}}})
 			podDaemonClusterCritical := test.Pod(test.PodOptions{NodeName: node.Name, PriorityClassName: "system-cluster-critical", ObjectMeta: metav1.ObjectMeta{OwnerReferences: []metav1.OwnerReference{{
 				APIVersion:         "apps/v1",
 				Kind:               "DaemonSet",
 				Name:               daemonClusterCritical.Name,
 				UID:                daemonClusterCritical.UID,
-				Controller:         lo.ToPtr(true),
-				BlockOwnerDeletion: lo.ToPtr(true),
+				Controller:         new(true),
+				BlockOwnerDeletion: new(true),
 			}}}})
 
 			ExpectApplied(ctx, env.Client, node, nodeClaim, podEvict, podNodeCritical, podClusterCritical, podDaemonEvict, podDaemonNodeCritical, podDaemonClusterCritical)
@@ -761,7 +761,7 @@ var _ = Describe("Termination", func() {
 					},
 					OwnerReferences: defaultOwnerRefs,
 				},
-				TerminationGracePeriodSeconds: lo.ToPtr(int64(300)),
+				TerminationGracePeriodSeconds: new(int64(300)),
 			})
 			ExpectApplied(ctx, env.Client, node, nodeClaim, nodePool, pod)
 
@@ -773,6 +773,39 @@ var _ = Describe("Termination", func() {
 			ExpectNodeExists(ctx, env.Client, node.Name)
 			pod = ExpectExists(ctx, env.Client, pod)
 			Expect(pod.DeletionTimestamp.IsZero()).To(BeFalse())
+		})
+		It("should not gate past-deadline pods behind graceful eviction of earlier tiers", func() {
+			// Regression guard: a critical pod past its force-delete threshold must be
+			// enqueued even when a non-critical pod is still a graceful-eviction candidate
+			// in an earlier tier. Otherwise, a PDB on the non-critical pod could hold up a
+			// past-deadline system-critical pod.
+			nodeClaim.Spec.TerminationGracePeriod = &metav1.Duration{Duration: time.Second * 300}
+			nodeClaim.Annotations = map[string]string{
+				v1.NodeClaimTerminationTimestampAnnotationKey: env.Clock.Now().Add(nodeClaim.Spec.TerminationGracePeriod.Duration).Format(time.RFC3339),
+			}
+			// Non-critical pod: TGP=30s fits in the remaining 300s → graceful eviction.
+			podNonCritical := test.Pod(test.PodOptions{
+				NodeName:                      node.Name,
+				ObjectMeta:                    metav1.ObjectMeta{OwnerReferences: defaultOwnerRefs},
+				TerminationGracePeriodSeconds: new(int64(30)),
+			})
+			// Critical pod: TGP=600s would extend past the deadline → force-delete-eligible.
+			// Under the pre-split code this pod sat in a later tier and would never be
+			// enqueued while podNonCritical remained in tier 0.
+			podCritical := test.Pod(test.PodOptions{
+				NodeName:                      node.Name,
+				PriorityClassName:             "system-node-critical",
+				ObjectMeta:                    metav1.ObjectMeta{OwnerReferences: defaultOwnerRefs},
+				TerminationGracePeriodSeconds: new(int64(600)),
+			})
+			ExpectApplied(ctx, env.Client, node, nodeClaim, nodePool, podNonCritical, podCritical)
+			Expect(env.Client.Delete(ctx, node)).To(Succeed())
+			env.Clock.Step(2 * termination.MinDrainTime)
+			ExpectRequeued(ExpectObjectReconciled(ctx, env.Client, terminationController, node)) // DrainInitiation
+			ExpectObjectReconciled(ctx, env.Client, queue, podCritical)
+
+			podCritical = ExpectExists(ctx, env.Client, podCritical)
+			Expect(podCritical.DeletionTimestamp.IsZero()).To(BeFalse())
 		})
 		It("should only delete pods when their terminationGracePeriodSeconds is less than the the node's remaining terminationGracePeriod", func() {
 			nodeClaim.Spec.TerminationGracePeriod = &metav1.Duration{Duration: time.Second * 300}
@@ -787,7 +820,7 @@ var _ = Describe("Termination", func() {
 					},
 					OwnerReferences: defaultOwnerRefs,
 				},
-				TerminationGracePeriodSeconds: lo.ToPtr(int64(60)),
+				TerminationGracePeriodSeconds: new(int64(60)),
 			})
 			env.Clock.SetTime(time.Now())
 			ExpectApplied(ctx, env.Client, node, nodeClaim, nodePool, pod)
@@ -804,6 +837,7 @@ var _ = Describe("Termination", func() {
 			// The pod should be deleted 60 seconds before the node's TGP expires
 			env.Clock.Step(175 * time.Second)
 			ExpectRequeued(ExpectObjectReconciled(ctx, env.Client, terminationController, node))
+			ExpectObjectReconciled(ctx, env.Client, queue, pod)
 			pod = ExpectExists(ctx, env.Client, pod)
 			Expect(pod.DeletionTimestamp.IsZero()).To(BeFalse())
 
@@ -826,7 +860,7 @@ var _ = Describe("Termination", func() {
 					},
 					OwnerReferences: defaultOwnerRefs,
 				},
-				TerminationGracePeriodSeconds: lo.ToPtr(int64(6000)),
+				TerminationGracePeriodSeconds: new(int64(6000)),
 			})
 			ExpectApplied(ctx, env.Client, node, nodeClaim, nodePool, pod)
 			ExpectDeletionTimestampSet(ctx, env.Client, pod)
@@ -835,6 +869,7 @@ var _ = Describe("Termination", func() {
 			// expect pod still exists
 			env.Clock.Step(90 * time.Second)
 			ExpectRequeued(ExpectObjectReconciled(ctx, env.Client, terminationController, node)) // DrainInitiation
+			ExpectObjectReconciled(ctx, env.Client, queue, pod)
 			ExpectNodeWithNodeClaimDraining(env.Client, node.Name)
 			ExpectNodeExists(ctx, env.Client, node.Name)
 			pod = ExpectExists(ctx, env.Client, pod)

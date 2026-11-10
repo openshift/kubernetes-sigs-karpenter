@@ -24,40 +24,54 @@ import (
 	"strings"
 	"time"
 
+	. "github.com/onsi/ginkgo/v2"
+	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
-
-	. "github.com/onsi/ginkgo/v2"
 
 	"sigs.k8s.io/karpenter/pkg/test"
 	"sigs.k8s.io/karpenter/test/pkg/environment/common"
 )
 
+// getPodsDisruptedCount fetches the total pod disruption count from Prometheus metrics
+func getPodsDisruptedCount(env *common.Environment) int {
+	metrics := env.ExpectPodMetrics()
+	disruptionMetrics := lo.Filter(metrics, func(m common.PrometheusMetric, _ int) bool {
+		return m.Name == "karpenter_pods_drained_total"
+	})
+
+	totalDisrupted := 0
+	for _, metric := range disruptionMetrics {
+		totalDisrupted += int(metric.Value)
+	}
+	return totalDisrupted
+}
+
 // OutputPerformanceReport outputs a performance report to console and file
 func OutputPerformanceReport(report *PerformanceReport, filePrefix string) {
-	// Console output (fallback)
 	GinkgoWriter.Printf("\n=== %s PERFORMANCE REPORT ===\n", report.TestType)
 	GinkgoWriter.Printf("Test: %s\n", report.TestName)
 	GinkgoWriter.Printf("Type: %s\n", report.TestType)
 	GinkgoWriter.Printf("Total Time: %v\n", report.TotalTime)
 	GinkgoWriter.Printf("Total Pods: %d (Net Change: %+d)\n", report.TotalPods, report.PodsNetChange)
 	GinkgoWriter.Printf("Total Nodes: %d (Net Change: %+d)\n", report.TotalNodes, report.NodesNetChange)
+	GinkgoWriter.Printf("Pods Disrupted: %d\n", report.PodsDisrupted)
 	GinkgoWriter.Printf("CPU Utilization: %.2f%%\n", report.TotalReservedCPUUtil*100)
 	GinkgoWriter.Printf("Memory Utilization: %.2f%%\n", report.TotalReservedMemoryUtil*100)
 	GinkgoWriter.Printf("Efficiency Score: %.1f%%\n", report.ResourceEfficiencyScore)
 	GinkgoWriter.Printf("Pods per Node: %.1f\n", report.PodsPerNode)
 	GinkgoWriter.Printf("Rounds: %d\n", report.Rounds)
-	if report.KarpenterMemoryMB > 0 {
-		GinkgoWriter.Printf("Karpenter Peak Memory: %.2f MB\n", report.KarpenterMemoryMB)
+
+	// Karpenter pod resource usage (from Kubernetes Metrics API)
+	if report.MetricsSampleCount > 0 {
+		GinkgoWriter.Printf("Karpenter Memory (P95/Avg/Max): %.2f / %.2f / %.2f MB (%d samples)\n",
+			report.KarpenterP95MemoryMB, report.KarpenterAvgMemoryMB, report.KarpenterMaxMemoryMB, report.MetricsSampleCount)
+		GinkgoWriter.Printf("Karpenter Heap (P95/Avg/Max): %.2f / %.2f / %.2f MB (%d samples)\n",
+			report.KarpenterP95HeapMB, report.KarpenterAvgHeapMB, report.KarpenterMaxHeapMB, report.MetricsSampleCount)
+		GinkgoWriter.Printf("Karpenter CPU (P95/Avg/Max): %.4f / %.4f / %.4f cores (%d samples)\n",
+			report.KarpenterP95CPUCores, report.KarpenterAvgCPUCores, report.KarpenterMaxCPUCores, report.MetricsSampleCount)
 	} else {
-		GinkgoWriter.Printf("Karpenter Peak Memory: Not available\n")
-	}
-	if report.KarpenterCPUNanos > 0 {
-		// CPU utilization % = (CPU time used / sample duration) * 100
-		cpuUtilPct := float64(report.KarpenterCPUNanos) / (common.CPUProfileSeconds * 1e9) * 100
-		GinkgoWriter.Printf("Karpenter Peak CPU: %.1f%% (%.0f ms)\n", cpuUtilPct, float64(report.KarpenterCPUNanos)/1e6)
-	} else {
-		GinkgoWriter.Printf("Karpenter Peak CPU: Not available\n")
+		GinkgoWriter.Printf("Karpenter Metrics: Not available (0 samples collected)\n")
 	}
 
 	// File output
@@ -110,8 +124,11 @@ func writeReportFiles(report *PerformanceReport, filePrefix, outputDir string) {
 // Returns a PerformanceReport with scale-out metrics and timing information.
 func ReportScaleOut(env *common.Environment, testName string, expectedPods int, timeout time.Duration) (*PerformanceReport, error) {
 	profiler := common.StartKarpenterProfiler(env)
-	defer profiler.Stop()
+	metricsPoller := common.StartKarpenterMetricsPoller(env)
 	startTime := time.Now()
+
+	// Capture baseline pod disruption count at start of test
+	baselinePodsDisrupted := getPodsDisruptedCount(env)
 
 	// Wait for all pods to be healthy
 	allPodsSelector := labels.SelectorFromSet(map[string]string{test.DiscoveryLabel: "unspecified"})
@@ -120,12 +137,15 @@ func ReportScaleOut(env *common.Environment, testName string, expectedPods int, 
 	}
 
 	totalTime := time.Since(startTime)
-	peakMemoryMB, peakProfileData, peakCPUNanos, cpuProfileData := profiler.Stop()
+	memProfile, cpuProfile := profiler.Stop()
+	stats := metricsPoller.Stop()
 
 	// Collect metrics
 	nodeCount := env.Monitor.CreatedNodeCount()
 	avgCPUUtil := env.Monitor.AvgUtilization(corev1.ResourceCPU)
 	avgMemUtil := env.Monitor.AvgUtilization(corev1.ResourceMemory)
+	// Calculate delta: only count disruptions during this test
+	podsDisrupted := getPodsDisruptedCount(env) - baselinePodsDisrupted
 
 	// Calculate derived metrics
 	resourceEfficiencyScore := (avgCPUUtil*90 + avgMemUtil*10)
@@ -142,16 +162,25 @@ func ReportScaleOut(env *common.Environment, testName string, expectedPods int, 
 		TotalTime:               totalTime,
 		PodsNetChange:           expectedPods,
 		NodesNetChange:          nodeCount,
+		PodsDisrupted:           podsDisrupted,
 		TotalReservedCPUUtil:    avgCPUUtil,
 		TotalReservedMemoryUtil: avgMemUtil,
 		ResourceEfficiencyScore: resourceEfficiencyScore,
 		PodsPerNode:             podsPerNode,
 		Rounds:                  1, // Scale-out is always 1 round
 		Timestamp:               time.Now(),
-		KarpenterMemoryMB:       peakMemoryMB,
-		KarpenterCPUNanos:       peakCPUNanos,
-		MemoryProfileData:       peakProfileData,
-		CPUProfileData:          cpuProfileData,
+		KarpenterP95MemoryMB:    stats.P95MemoryMB,
+		KarpenterAvgMemoryMB:    stats.AvgMemoryMB,
+		KarpenterMaxMemoryMB:    stats.MaxMemoryMB,
+		KarpenterP95HeapMB:      stats.P95HeapMB,
+		KarpenterAvgHeapMB:      stats.AvgHeapMB,
+		KarpenterMaxHeapMB:      stats.MaxHeapMB,
+		KarpenterP95CPUCores:    stats.P95CPUCores,
+		KarpenterAvgCPUCores:    stats.AvgCPUCores,
+		KarpenterMaxCPUCores:    stats.MaxCPUCores,
+		MetricsSampleCount:      stats.SampleCount,
+		MemoryProfileData:       memProfile,
+		CPUProfileData:          cpuProfile,
 	}, nil
 }
 
@@ -169,8 +198,11 @@ func ReportScaleOut(env *common.Environment, testName string, expectedPods int, 
 // Returns a PerformanceReport with consolidation metrics and timing information.
 func ReportConsolidation(env *common.Environment, testName string, initialPods, finalPods, initialNodes int, timeout time.Duration) (*PerformanceReport, error) {
 	profiler := common.StartKarpenterProfiler(env)
-	defer profiler.Stop()
+	metricsPoller := common.StartKarpenterMetricsPoller(env)
 	startTime := time.Now()
+
+	// Capture baseline pod disruption count at start of test
+	baselinePodsDisrupted := getPodsDisruptedCount(env)
 
 	// Wait for pods to scale down first
 	allPodsSelector := labels.SelectorFromSet(map[string]string{test.DiscoveryLabel: "unspecified"})
@@ -181,12 +213,15 @@ func ReportConsolidation(env *common.Environment, testName string, initialPods, 
 	// Monitor consolidation rounds
 	consolidationRounds, _ := monitorConsolidationRounds(env, timeout)
 	totalTime := time.Since(startTime)
-	peakMemoryMB, peakProfileData, peakCPUNanos, cpuProfileData := profiler.Stop()
+	memProfile, cpuProfile := profiler.Stop()
+	stats := metricsPoller.Stop()
 
 	// Collect final metrics
 	finalNodes := env.Monitor.CreatedNodeCount()
 	avgCPUUtil := env.Monitor.AvgUtilization(corev1.ResourceCPU)
 	avgMemUtil := env.Monitor.AvgUtilization(corev1.ResourceMemory)
+	// Calculate delta: only count disruptions during this test
+	podsDisrupted := getPodsDisruptedCount(env) - baselinePodsDisrupted
 
 	// Calculate derived metrics
 	resourceEfficiencyScore := (avgCPUUtil*90 + avgMemUtil*10)
@@ -203,16 +238,25 @@ func ReportConsolidation(env *common.Environment, testName string, initialPods, 
 		TotalTime:               totalTime,
 		PodsNetChange:           finalPods - initialPods,
 		NodesNetChange:          finalNodes - initialNodes,
+		PodsDisrupted:           podsDisrupted,
 		TotalReservedCPUUtil:    avgCPUUtil,
 		TotalReservedMemoryUtil: avgMemUtil,
 		ResourceEfficiencyScore: resourceEfficiencyScore,
 		PodsPerNode:             podsPerNode,
 		Rounds:                  len(consolidationRounds),
 		Timestamp:               time.Now(),
-		KarpenterMemoryMB:       peakMemoryMB,
-		KarpenterCPUNanos:       peakCPUNanos,
-		MemoryProfileData:       peakProfileData,
-		CPUProfileData:          cpuProfileData,
+		KarpenterP95MemoryMB:    stats.P95MemoryMB,
+		KarpenterAvgMemoryMB:    stats.AvgMemoryMB,
+		KarpenterMaxMemoryMB:    stats.MaxMemoryMB,
+		KarpenterP95HeapMB:      stats.P95HeapMB,
+		KarpenterAvgHeapMB:      stats.AvgHeapMB,
+		KarpenterMaxHeapMB:      stats.MaxHeapMB,
+		KarpenterP95CPUCores:    stats.P95CPUCores,
+		KarpenterAvgCPUCores:    stats.AvgCPUCores,
+		KarpenterMaxCPUCores:    stats.MaxCPUCores,
+		MetricsSampleCount:      stats.SampleCount,
+		MemoryProfileData:       memProfile,
+		CPUProfileData:          cpuProfile,
 	}, nil
 }
 
@@ -229,9 +273,12 @@ func ReportConsolidation(env *common.Environment, testName string, initialPods, 
 // Returns a PerformanceReport with drift metrics and timing information.
 func ReportDrift(env *common.Environment, testName string, expectedPods int, timeout time.Duration) (*PerformanceReport, error) {
 	profiler := common.StartKarpenterProfiler(env)
-	defer profiler.Stop()
+	metricsPoller := common.StartKarpenterMetricsPoller(env)
 	startTime := time.Now()
 	initialNodeCount := env.Monitor.CreatedNodeCount()
+
+	// Capture baseline pod disruption count at start of test
+	baselinePodsDisrupted := getPodsDisruptedCount(env)
 
 	// Track node replacement during drift
 	driftRounds := 0
@@ -281,12 +328,15 @@ func ReportDrift(env *common.Environment, testName string, expectedPods int, tim
 	}
 
 	totalTime := time.Since(startTime)
-	peakMemoryMB, peakProfileData, peakCPUNanos, cpuProfileData := profiler.Stop()
+	memProfile, cpuProfile := profiler.Stop()
+	stats := metricsPoller.Stop()
 	finalNodeCount := env.Monitor.CreatedNodeCount()
 
 	// Collect metrics
 	avgCPUUtil := env.Monitor.AvgUtilization(corev1.ResourceCPU)
 	avgMemUtil := env.Monitor.AvgUtilization(corev1.ResourceMemory)
+	// Calculate delta: only count disruptions during this test
+	podsDisrupted := getPodsDisruptedCount(env) - baselinePodsDisrupted
 
 	// Calculate derived metrics
 	resourceEfficiencyScore := (avgCPUUtil*90 + avgMemUtil*10)
@@ -308,16 +358,25 @@ func ReportDrift(env *common.Environment, testName string, expectedPods int, tim
 		TotalTime:               totalTime,
 		PodsNetChange:           0,                                 // Pods don't change in drift
 		NodesNetChange:          finalNodeCount - initialNodeCount, // Net change in nodes (should be ~0 for drift)
+		PodsDisrupted:           podsDisrupted,
 		TotalReservedCPUUtil:    avgCPUUtil,
 		TotalReservedMemoryUtil: avgMemUtil,
 		ResourceEfficiencyScore: resourceEfficiencyScore,
 		PodsPerNode:             podsPerNode,
 		Rounds:                  driftRounds,
 		Timestamp:               time.Now(),
-		KarpenterMemoryMB:       peakMemoryMB,
-		KarpenterCPUNanos:       peakCPUNanos,
-		MemoryProfileData:       peakProfileData,
-		CPUProfileData:          cpuProfileData,
+		KarpenterP95MemoryMB:    stats.P95MemoryMB,
+		KarpenterAvgMemoryMB:    stats.AvgMemoryMB,
+		KarpenterMaxMemoryMB:    stats.MaxMemoryMB,
+		KarpenterP95HeapMB:      stats.P95HeapMB,
+		KarpenterAvgHeapMB:      stats.AvgHeapMB,
+		KarpenterMaxHeapMB:      stats.MaxHeapMB,
+		KarpenterP95CPUCores:    stats.P95CPUCores,
+		KarpenterAvgCPUCores:    stats.AvgCPUCores,
+		KarpenterMaxCPUCores:    stats.MaxCPUCores,
+		MetricsSampleCount:      stats.SampleCount,
+		MemoryProfileData:       memProfile,
+		CPUProfileData:          cpuProfile,
 	}, nil
 }
 
@@ -393,6 +452,10 @@ func ReportScaleOutWithOutput(env *common.Environment, testName string, expected
 		return nil, err
 	}
 	OutputPerformanceReport(report, filePrefix)
+	// Without samples every resource stat is zero and would pass its threshold.
+	if report.MetricsSampleCount == 0 {
+		return nil, fmt.Errorf("collected no Karpenter metrics samples")
+	}
 	return report, nil
 }
 
@@ -403,6 +466,10 @@ func ReportConsolidationWithOutput(env *common.Environment, testName string, ini
 		return nil, err
 	}
 	OutputPerformanceReport(report, filePrefix)
+	// Without samples every resource stat is zero and would pass its threshold.
+	if report.MetricsSampleCount == 0 {
+		return nil, fmt.Errorf("collected no Karpenter metrics samples")
+	}
 	return report, nil
 }
 
@@ -413,5 +480,9 @@ func ReportDriftWithOutput(env *common.Environment, testName string, expectedPod
 		return nil, err
 	}
 	OutputPerformanceReport(report, filePrefix)
+	// Without samples every resource stat is zero and would pass its threshold.
+	if report.MetricsSampleCount == 0 {
+		return nil, fmt.Errorf("collected no Karpenter metrics samples")
+	}
 	return report, nil
 }

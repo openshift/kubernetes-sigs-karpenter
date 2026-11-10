@@ -69,33 +69,30 @@ var _ = Describe("ReservationManager", func() {
 		}
 		// Create hardcoded instance types with reserved offerings
 		instanceTypes = []*cloudprovider.InstanceType{
-			fake.NewInstanceType(fake.InstanceTypeOptions{
-				Name: "small-reserved",
-				Resources: corev1.ResourceList{
+			fake.NewInstanceType("small-reserved",
+				fake.WithResources(corev1.ResourceList{
 					corev1.ResourceCPU:    resource.MustParse("2"),
 					corev1.ResourceMemory: resource.MustParse("4Gi"),
 					corev1.ResourcePods:   resource.MustParse("10"),
-				},
-				Offerings: []*cloudprovider.Offering{threeCapacityOffering},
-			}),
-			fake.NewInstanceType(fake.InstanceTypeOptions{
-				Name: "medium-reserved",
-				Resources: corev1.ResourceList{
+				}),
+				fake.WithOfferings(*threeCapacityOffering),
+			),
+			fake.NewInstanceType("medium-reserved",
+				fake.WithResources(corev1.ResourceList{
 					corev1.ResourceCPU:    resource.MustParse("4"),
 					corev1.ResourceMemory: resource.MustParse("8Gi"),
 					corev1.ResourcePods:   resource.MustParse("20"),
-				},
-				Offerings: []*cloudprovider.Offering{twoCapacityOffering},
-			}),
-			fake.NewInstanceType(fake.InstanceTypeOptions{
-				Name: "large-reserved",
-				Resources: corev1.ResourceList{
+				}),
+				fake.WithOfferings(*twoCapacityOffering),
+			),
+			fake.NewInstanceType("large-reserved",
+				fake.WithResources(corev1.ResourceList{
 					corev1.ResourceCPU:    resource.MustParse("8"),
 					corev1.ResourceMemory: resource.MustParse("16Gi"),
 					corev1.ResourcePods:   resource.MustParse("40"),
-				},
-				Offerings: []*cloudprovider.Offering{oneCapacityOffering},
-			}),
+				}),
+				fake.WithOfferings(*oneCapacityOffering),
+			),
 		}
 
 		// Extract offerings from instance types
@@ -363,9 +360,37 @@ var _ = Describe("ReservationManager", func() {
 			Expect(rm.HasReservation("host-3", twoCapacityOffering)).To(BeTrue())   // Reserved for host-3
 
 			// Check capacity availability
-			Expect(rm.RemainingCapacity(twoCapacityOffering)).To(Equal(1)) // Should have 1 available (2 total, 1 used by host-3)
-			Expect(rm.RemainingCapacity(twoCapacityOffering)).To(Equal(1)) // Should have 1 available (3 total, 2 used)
-			Expect(rm.RemainingCapacity(twoCapacityOffering)).To(Equal(1)) // Should have 1 available (1 total, 0 used after release)
+			Expect(rm.RemainingCapacity(twoCapacityOffering)).To(Equal(1))   // Should have 1 available (2 total, 1 used by host-3)
+			Expect(rm.RemainingCapacity(threeCapacityOffering)).To(Equal(1)) // Should have 1 available (3 total, 2 used)
+			Expect(rm.RemainingCapacity(oneCapacityOffering)).To(Equal(1))   // Should have 1 available (1 total, 0 used after release)
+		})
+	})
+
+	Context("Credit", func() {
+		It("increments capacity for a known reservation and flips CanReserve", func() {
+			rm.Reserve("host-1", oneCapacityOffering) // exhaust it (capacity 1)
+			Expect(rm.RemainingCapacity(oneCapacityOffering)).To(Equal(0))
+			Expect(rm.CanReserve("host-2", oneCapacityOffering)).To(BeFalse())
+
+			rm.Credit(oneCapacityOffering.ReservationID(), 1) // model a disruption candidate freeing its slot
+			Expect(rm.RemainingCapacity(oneCapacityOffering)).To(Equal(1))
+			Expect(rm.CanReserve("host-2", oneCapacityOffering)).To(BeTrue())
+		})
+
+		It("is a no-op for an unknown reservation id (guard holds)", func() {
+			unknown := &cloudprovider.Offering{
+				Available:           true,
+				ReservationCapacity: 1,
+				Requirements: pscheduling.NewLabelRequirements(map[string]string{
+					v1.CapacityTypeLabelKey:          v1.CapacityTypeReserved,
+					corev1.LabelTopologyZone:         "test-zone-9",
+					cloudprovider.ReservationIDLabel: "unseeded-reserved",
+				}),
+			}
+			// The manager was seeded only from the three known reservations, so this id is unknown. Credit must not
+			// create it — if the guard were dropped, the id would become known and CanReserve would stop panicking.
+			rm.Credit(unknown.ReservationID(), 5)
+			Expect(func() { rm.CanReserve("host-x", unknown) }).To(Panic())
 		})
 	})
 })
