@@ -1,12 +1,16 @@
 # This is the format of an AWS ECR Public Repo as an example.
 export KWOK_REPO ?= ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com
 export KARPENTER_NAMESPACE=kube-system
+export KIND_CLUSTER_NAME ?= test-cluster
 
 HELM_OPTS ?= --set logLevel=debug \
 			--set controller.resources.requests.cpu=1 \
 			--set controller.resources.requests.memory=1Gi \
-			--set controller.resources.limits.cpu=1 \
-			--set controller.resources.limits.memory=1Gi
+			--set controller.resources.limits.cpu=2 \
+			--set controller.resources.limits.memory=2Gi \
+			--set settings.featureGates.nodeRepair=true \
+			--set settings.featureGates.capacityBuffer=true \
+			--set settings.featureGates.staticCapacity=true
 
 help: ## Display help
 	@awk 'BEGIN {FS = ":.*##"; printf "Usage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z_0-9-]+:.*?##/ { printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
@@ -14,10 +18,10 @@ help: ## Display help
 presubmit: verify test licenses vulncheck ## Run all steps required for code to be checked in
 
 install-kwok: ## Install kwok provider
-	UNINSTALL_KWOK=false ./hack/install-kwok.sh
+	./hack/install-kwok.sh
 
 uninstall-kwok: ## Uninstall kwok provider
-	UNINSTALL_KWOK=true ./hack/install-kwok.sh
+	UNINSTALL=true ./hack/install-kwok.sh
 
 build-with-kind: # build with kind assumes the image will be uploaded directly onto the kind control plane, without an image repository
 	$(eval CONTROLLER_IMG=$(shell $(WITH_GOFLAGS) KO_DOCKER_REPO="$(KWOK_REPO)" ko build sigs.k8s.io/karpenter/kwok))
@@ -31,13 +35,13 @@ build-with-openshift: ## Build the Karpenter KWOK controller images using ko bui
 	$(eval CONTROLLER_IMG=$(shell $(WITH_GOFLAGS) KO_DOCKER_REPO="$(KWOK_REPO)" ko build --insecure-registry sigs.k8s.io/karpenter/kwok))
 	$(eval IMG_REPOSITORY=$(shell echo $(INTERNAL_REPO)/$(shell echo $(CONTROLLER_IMG) | cut -d "/" -f 2-3 | cut -d "@" -f 1)))
 	$(eval IMG_TAG=latest)
-	
+
 build: ## Build the Karpenter KWOK controller images using ko build
 	$(eval CONTROLLER_IMG=$(shell $(WITH_GOFLAGS) KO_DOCKER_REPO="$(KWOK_REPO)" ko build -B sigs.k8s.io/karpenter/kwok))
 	$(eval IMG_REPOSITORY=$(shell echo $(CONTROLLER_IMG) | cut -d "@" -f 1 | cut -d ":" -f 1))
 	$(eval IMG_TAG=$(shell echo $(CONTROLLER_IMG) | cut -d "@" -f 1 | cut -d ":" -f 2 -s))
 	$(eval IMG_DIGEST=$(shell echo $(CONTROLLER_IMG) | cut -d "@" -f 2))
- 
+
 apply-with-kind: verify build-with-kind ## Deploy the kwok controller from the current state of your git repository into your ~/.kube/config cluster
 	kubectl apply -f kwok/charts/crds
 	helm upgrade --install karpenter kwok/charts --namespace $(KARPENTER_NAMESPACE) --skip-crds \
@@ -45,6 +49,16 @@ apply-with-kind: verify build-with-kind ## Deploy the kwok controller from the c
 		--set controller.image.repository=$(IMG_REPOSITORY) \
 		--set controller.image.tag=$(IMG_TAG) \
 		--set serviceMonitor.enabled=true \
+		--set-string controller.env[0].name=ENABLE_PROFILING \
+		--set-string controller.env[0].value=true
+
+apply-with-kind-dra: verify build-with-kind ## Deploy the kwok controller for DRA testing
+	kubectl apply -f kwok/charts/crds
+	helm upgrade --install karpenter kwok/charts --namespace $(KARPENTER_NAMESPACE) --skip-crds \
+		$(HELM_OPTS) \
+		--set controller.image.repository=$(IMG_REPOSITORY) \
+		--set controller.image.tag=$(IMG_TAG) \
+		--set serviceMonitor.enabled=false \
 		--set-string controller.env[0].name=ENABLE_PROFILING \
 		--set-string controller.env[0].value=true
 
@@ -60,18 +74,42 @@ apply-with-openshift: openshift-verify build-with-openshift ## Deploy the kwok c
 		--set-string controller.env[0].name=ENABLE_PROFILING \
 		--set-string controller.env[0].value=true
 
+get-kind-image: ## Extract the actual KWOK image repository from Kind cluster
+	$(eval IMG_REPOSITORY=$(shell docker exec $(KIND_CLUSTER_NAME)-control-plane crictl images | grep "kind.local/kwok" | awk '{print $$1}' | head -1))
+	$(eval IMG_TAG=latest)
+	@echo "Using Repository: $(IMG_REPOSITORY), Tag: $(IMG_TAG)"
+
+setup-kind: ## Setup a Kind cluster for the e2e suites, with the kube-scheduler configuration they expect
+	-kind delete cluster --name $(KIND_CLUSTER_NAME)
+	kind create cluster --name $(KIND_CLUSTER_NAME) --config hack/kind/cluster.yaml
+	kubectl taint nodes $(KIND_CLUSTER_NAME)-control-plane CriticalAddonsOnly:NoSchedule
+
+setup-kind-dra: ## Setup Kind cluster for DRA testing
+	-kind delete cluster --name $(KIND_CLUSTER_NAME)
+	kind create cluster --image kindest/node:v1.34.0 --name $(KIND_CLUSTER_NAME)
+	KWOK_REPO=kind.local KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) $(MAKE) install-kwok
+	KWOK_REPO=kind.local KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) $(MAKE) build-with-kind
+	KWOK_REPO=kind.local KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) $(MAKE) apply-with-kind-dra
+	kubectl taint nodes $(KIND_CLUSTER_NAME)-control-plane CriticalAddonsOnly=true:NoSchedule --overwrite
+	kubectl create namespace karpenter --dry-run=client -o yaml | kubectl apply -f -
+
+delete-kind-dra: ## Delete DRA Kind cluster
+	kind delete cluster --name $(KIND_CLUSTER_NAME)
+
 # TODO(jkyros): This got squashed out accidentally once before, this needs to stay in unless
-# we decide to explicitly take it out, so watch for it :) 
+# we decide to explicitly take it out, so watch for it :)
 JUNIT_REPORT := $(if $(ARTIFACT_DIR), --ginkgo.junit-report="$(ARTIFACT_DIR)/junit_report.xml")
 e2etests: ## Run the e2e suite against your local cluster
 	cd test && go test \
 		-count 1 \
-		-timeout 30m \
+		-timeout 2h \
 		-v \
 		./suites/$(shell echo $(TEST_SUITE) | tr A-Z a-z)/... \
+		$(JUNIT_REPORT) \
 		--ginkgo.focus="${FOCUS}" \
-		--ginkgo.timeout=30m \
-		--ginkgo.grace-period=5m \
+		--ginkgo.skip="${SKIP}" \
+		--ginkgo.timeout=2h \
+		--ginkgo.grace-period=15m \
 		--ginkgo.vv
 
 # Run make install-kwok to install the kwok controller in your cluster first
@@ -99,8 +137,37 @@ test: ## Run tests
 		--ginkgo.v \
 		-cover -coverprofile=coverage.out -outputdir=. -coverpkg=./...
 
+test-memory: ## Run memory usage tests for node overlay store
+	go test -v ./pkg/controllers/nodeoverlay/... -run TestMemoryUsage
+
+test-dra: ## Run DRA KWOK driver unit tests
+	go test ./dra-kwok-driver/pkg/... \
+		-race \
+		-timeout 20m \
+		--ginkgo.focus="${FOCUS}" \
+		--ginkgo.randomize-all \
+		--ginkgo.v \
+		-cover
+
+e2etest-dra: ## Run DRA e2e integration tests
+	kubectl apply -f dra-kwok-driver/pkg/apis/crds/test.karpenter.sh_draconfigs.yaml
+	-kubectl delete draconfigs --all --ignore-not-found=true
+	-kubectl delete resourceslices --all --ignore-not-found=true
+	-pkill -f dra-kwok-driver || true
+	cd dra-kwok-driver && go build -o dra-kwok-driver main.go
+	cd dra-kwok-driver && ./dra-kwok-driver > /tmp/dra-driver.log 2>&1 & echo $$! > /tmp/dra-driver.pid
+	sleep 2
+	TEST_SUITE=dra $(MAKE) e2etests
+	-kubectl delete draconfigs --all --ignore-not-found=true
+	-kubectl delete resourceslices --all --ignore-not-found=true
+	-kill $$(cat /tmp/dra-driver.pid) 2>/dev/null || true
+	-rm -f /tmp/dra-driver.pid
+
+benchmark: ## Run benchmark tests for node overlay store
+	go test -bench=. -benchmem ./pkg/controllers/nodeoverlay/... -run=^$$
+
 deflake: ## Run randomized, racing tests until the test fails to catch flakes
-	ginkgo \
+	go tool -modfile=go.tools.mod ginkgo \
 		--race \
 		--focus="${FOCUS}" \
 		--timeout=20m \
@@ -110,12 +177,15 @@ deflake: ## Run randomized, racing tests until the test fails to catch flakes
 		./pkg/...
 
 vulncheck: ## Verify code vulnerabilities
-	@govulncheck ./pkg/...
+	@go tool -modfile=go.tools.mod govulncheck ./pkg/...
 
 licenses: download ## Verifies dependency licenses
-	! go-licenses csv ./... | grep -v -e 'MIT' -e 'Apache-2.0' -e 'BSD-3-Clause' -e 'BSD-2-Clause' -e 'ISC' -e 'MPL-2.0'
+	LICENSEFILE=$$(mktemp /tmp/licenses-XXXXXX.csv) && \
+	go tool -modfile=go.tools.mod go-licenses csv ./... > $$LICENSEFILE && \
+	! grep -v -e 'MIT' -e 'Apache-2.0' -e 'BSD-3-Clause' -e 'BSD-2-Clause' -e 'ISC' -e 'MPL-2.0' $$LICENSEFILE
 
 verify: ## Verify code. Includes codegen, docgen, dependencies, linting, formatting, etc
+	rm -rf vendor
 	go mod tidy
 	go generate ./...
 	hack/validation/taint.sh
@@ -128,43 +198,26 @@ verify: ## Verify code. Includes codegen, docgen, dependencies, linting, formatt
 	@# Use perl instead of sed due to https://stackoverflow.com/questions/4247068/sed-command-with-i-option-failing-on-mac-but-works-on-linux
 	@# We need to do this "sed replace" until controller-tools fixes this parameterized types issue: https://github.com/kubernetes-sigs/controller-tools/issues/756
 	@perl -i -pe 's/sets.Set/sets.Set[string]/g' pkg/scheduling/zz_generated.deepcopy.go
-	hack/boilerplate.sh
+	go tool -modfile=go.tools.mod nwa config -c add
 	go vet ./...
-	cd kwok/charts && helm-docs
-	golangci-lint run
+	go tool -modfile=go.tools.mod golangci-lint-kube-api-linter run
+	cd kwok/charts && go tool -modfile=../../go.tools.mod helm-docs
+	go tool -modfile=go.tools.mod actionlint -oneline
+	go mod vendor
+	@git checkout -- go.tools.mod go.tools.sum 2>/dev/null || true
 	@git diff --quiet ||\
 		{ echo "New file modification detected in the Git working tree. Please check in before commit."; git --no-pager diff --name-only | uniq | awk '{print "  - " $$0}'; \
 		if [ "${CI}" = true ]; then\
 			exit 1;\
 		fi;}
-	actionlint -oneline
 
 # UPSTREAM: <carry>: duplicates verify, but removes unnecessary steps for downstream
 .PHONY: openshift-verify
-openshift-verify: ## Verify code on OpenShift Prow CI. A stripped down copy of the "verify" target.
-	go mod tidy && go mod vendor && go mod verify
-	go generate ./...
-	hack/validation/taint.sh
-	hack/validation/requirements.sh
-	hack/validation/labels.sh
-	hack/validation/status.sh
-	cp -r pkg/apis/crds kwok/charts
-	hack/kwok/requirements.sh
-	@perl -i -pe 's/sets.Set/sets.Set[string]/g' pkg/scheduling/zz_generated.deepcopy.go
-	hack/boilerplate.sh
-	go vet ./...
-	golangci-lint run
-	@git diff --quiet ||\
-		{ echo "New file modification detected in the Git working tree. Please check in before commit."; git --no-pager diff --name-only | uniq | awk '{print "  - " $$0}'; \
-		if [ "${CI}" = true ]; then\
-			exit 1;\
-		fi;}
+openshift-verify: export GOFLAGS = -mod=readonly
+openshift-verify: verify ## Verify code on OpenShift Prow CI
 
 download: ## Recursively "go mod download" on all directories where go.mod exists
 	$(foreach dir,$(MOD_DIRS),cd $(dir) && go mod download $(newline))
-
-toolchain: ## Install developer toolchain
-	./hack/toolchain.sh
 
 # UPSTREAM: <carry>: installs toolchain for OpenShift CI.
 .PHONY: openshift-toolchain
@@ -174,4 +227,4 @@ openshift-toolchain: ## Install developer toolchain for OpenShift CI.
 gen_instance_types:
 	go run kwok/tools/gen_instance_types.go > kwok/cloudprovider/instance_types.json
 
-.PHONY: help presubmit install-kwok uninstall-kwok build apply delete test deflake vulncheck licenses verify download toolchain gen_instance_types
+.PHONY: help presubmit install-kwok uninstall-kwok build apply delete test test-memory test-dra e2etest-dra benchmark deflake vulncheck licenses verify download gen_instance_types setup-kind setup-kind-dra delete-kind-dra apply-with-kind-dra

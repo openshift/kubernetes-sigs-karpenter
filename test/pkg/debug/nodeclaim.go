@@ -75,6 +75,6 @@ func (c *NodeClaimController) Register(_ context.Context, m manager.Manager) err
 				return c.GetInfo(oldNodeClaim) != c.GetInfo(newNodeClaim)
 			},
 		}).
-		WithOptions(controller.Options{MaxConcurrentReconciles: 10}).
+		WithOptions(controller.Options{MaxConcurrentReconciles: 10, SkipNameValidation: new(true)}).
 		Complete(c)
 }

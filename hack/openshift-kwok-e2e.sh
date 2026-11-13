@@ -13,7 +13,7 @@ oc create clusterrolebinding authenticated-registry-viewer --clusterrole registr
 CLEANUP=${CLEANUP:-true}
 exit_handler() {
   echo "Cleaning up..."
-  oc adm taint nodes --all CriticalAddonsOnly:NoSchedule- --overwrite
+  oc adm taint nodes --selector "node-role.kubernetes.io/worker" CriticalAddonsOnly:NoSchedule- --overwrite
 
   if [[ "${CLEANUP}" == "true" ]]; then
     oc delete nodepools --all 
@@ -33,10 +33,13 @@ oc create namespace "${ko_namespace}" || true
 # install karpenter-provider-kwok
 KWOK_REPO="${REGISTRY_HOST}/${ko_namespace}" make apply-with-openshift
 
-# tests expect all nodes to be tainted before running:
-# https://github.com/kubernetes-sigs/karpenter/blob/main/test/pkg/environment/common/setup.go#L87
-echo "Tainting all nodes..."
-oc adm taint nodes --all CriticalAddonsOnly:NoSchedule --overwrite
+# wait for karpenter to be ready
+oc wait --for=condition=ready pod -l app.kubernetes.io/name=karpenter -n kube-system --timeout=300s
 
-# run e2e tests
-make e2etests
+# tests expect all existing nodes to be tainted or unschedulable before running:
+# https://github.com/kubernetes-sigs/karpenter/blob/main/test/pkg/environment/common/setup.go#L87
+echo "Tainting all worker nodes..."
+oc adm taint nodes --selector "node-role.kubernetes.io/worker" CriticalAddonsOnly:NoSchedule --overwrite
+
+# TODO(maxcao13): skip static capacity tests for now since it is not supported yet.
+SKIP="StaticCapacity" TEST_SUITE=regression make e2etests

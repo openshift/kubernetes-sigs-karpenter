@@ -19,13 +19,16 @@ package options_test
 import (
 	"context"
 	"flag"
+	"fmt"
 	"os"
+	"reflect"
 	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/samber/lo"
+	corev1 "k8s.io/api/core/v1"
 
 	"sigs.k8s.io/karpenter/pkg/operator/options"
 	"sigs.k8s.io/karpenter/pkg/test"
@@ -50,7 +53,9 @@ var _ = Describe("Options", func() {
 		"KUBE_CLIENT_QPS",
 		"KUBE_CLIENT_BURST",
 		"ENABLE_PROFILING",
+		"DISABLE_CONTROLLER_WARMUP",
 		"DISABLE_LEADER_ELECTION",
+		"DISABLE_CLUSTER_STATE_OBSERVABILITY",
 		"LEADER_ELECTION_NAMESPACE",
 		"MEMORY_LIMIT",
 		"LOG_LEVEL",
@@ -58,7 +63,11 @@ var _ = Describe("Options", func() {
 		"LOG_ERROR_OUTPUT_PATHS",
 		"BATCH_MAX_DURATION",
 		"BATCH_IDLE_DURATION",
+		"PREFERENCE_POLICY",
+		"MIN_VALUES_POLICY",
 		"FEATURE_GATES",
+		"SCHEDULER_CONFIG",
+		"LEGACY_NODE_REPAIR",
 	}
 
 	BeforeEach(func() {
@@ -95,26 +104,35 @@ var _ = Describe("Options", func() {
 			err := opts.Parse(fs)
 			Expect(err).To(BeNil())
 			expectOptionsMatch(opts, test.Options(test.OptionsFields{
-				ServiceName:             lo.ToPtr(""),
-				MetricsPort:             lo.ToPtr(8080),
-				HealthProbePort:         lo.ToPtr(8081),
-				KubeClientQPS:           lo.ToPtr(200),
-				KubeClientBurst:         lo.ToPtr(300),
-				EnableProfiling:         lo.ToPtr(false),
-				DisableLeaderElection:   lo.ToPtr(false),
-				LeaderElectionName:      lo.ToPtr("karpenter-leader-election"),
-				LeaderElectionNamespace: lo.ToPtr(""),
-				MemoryLimit:             lo.ToPtr[int64](-1),
-				LogLevel:                lo.ToPtr("info"),
-				LogOutputPaths:          lo.ToPtr("stdout"),
-				LogErrorOutputPaths:     lo.ToPtr("stderr"),
-				BatchMaxDuration:        lo.ToPtr(10 * time.Second),
-				BatchIdleDuration:       lo.ToPtr(time.Second),
+				ServiceName:                      new(""),
+				MetricsPort:                      new(8080),
+				HealthProbePort:                  new(8081),
+				KubeClientQPS:                    new(200),
+				KubeClientBurst:                  new(300),
+				EnableProfiling:                  new(false),
+				DisableControllerWarmup:          new(true),
+				DisableLeaderElection:            new(false),
+				DisableClusterStateObservability: new(false),
+				LeaderElectionName:               new("karpenter-leader-election"),
+				LeaderElectionNamespace:          new(""),
+				MemoryLimit:                      lo.ToPtr[int64](-1),
+				LogLevel:                         new("info"),
+				LogOutputPaths:                   new("stdout"),
+				LogErrorOutputPaths:              new("stderr"),
+				BatchMaxDuration:                 lo.ToPtr(10 * time.Second),
+				BatchIdleDuration:                lo.ToPtr(time.Second),
+				PreferencePolicy:                 lo.ToPtr(options.PreferencePolicyRespect),
+				MinValuesPolicy:                  lo.ToPtr(options.MinValuesPolicyStrict),
 				FeatureGates: test.FeatureGates{
-					ReservedCapacity:        lo.ToPtr(false),
-					NodeRepair:              lo.ToPtr(false),
-					SpotToSpotConsolidation: lo.ToPtr(false),
+					ReservedCapacity:        new(true),
+					NodeRepair:              new(false),
+					SpotToSpotConsolidation: new(false),
+					NodeOverlay:             new(false),
+					StaticCapacity:          new(false),
+					CapacityBuffer:          new(false),
 				},
+				IgnoreDRARequests: new(true),
+				SchedulerConfig:   nil,
 			}))
 		})
 
@@ -129,7 +147,9 @@ var _ = Describe("Options", func() {
 				"--kube-client-qps", "0",
 				"--kube-client-burst", "0",
 				"--enable-profiling",
+				"--disable-controller-warmup=false",
 				"--disable-leader-election=true",
+				"--disable-cluster-state-observability=true",
 				"--leader-election-name=karpenter-controller",
 				"--leader-election-namespace=karpenter",
 				"--memory-limit", "0",
@@ -138,29 +158,49 @@ var _ = Describe("Options", func() {
 				"--log-error-output-paths", "/etc/k8s/testerror",
 				"--batch-max-duration", "5s",
 				"--batch-idle-duration", "5s",
-				"--feature-gates", "ReservedCapacity=true,SpotToSpotConsolidation=true,NodeRepair=true",
+				"--preference-policy", "Ignore",
+				"--min-values-policy", "BestEffort",
+				"--feature-gates", "ReservedCapacity=false,SpotToSpotConsolidation=true,NodeRepair=true,NodeOverlay=true,StaticCapacity=true,CapacityBuffer=true",
+				"--scheduler-config", `{"podTopologySpread":{"defaultConstraints":[{"maxSkew":1,"topologyKey":"topology.kubernetes.io/zone","whenUnsatisfiable":"ScheduleAnyway"}]}}`,
 			)
 			Expect(err).To(BeNil())
 			expectOptionsMatch(opts, test.Options(test.OptionsFields{
-				ServiceName:             lo.ToPtr("cli"),
-				MetricsPort:             lo.ToPtr(0),
-				HealthProbePort:         lo.ToPtr(0),
-				KubeClientQPS:           lo.ToPtr(0),
-				KubeClientBurst:         lo.ToPtr(0),
-				EnableProfiling:         lo.ToPtr(true),
-				DisableLeaderElection:   lo.ToPtr(true),
-				LeaderElectionName:      lo.ToPtr("karpenter-controller"),
-				LeaderElectionNamespace: lo.ToPtr("karpenter"),
-				MemoryLimit:             lo.ToPtr[int64](0),
-				LogLevel:                lo.ToPtr("debug"),
-				LogOutputPaths:          lo.ToPtr("/etc/k8s/test"),
-				LogErrorOutputPaths:     lo.ToPtr("/etc/k8s/testerror"),
-				BatchMaxDuration:        lo.ToPtr(5 * time.Second),
-				BatchIdleDuration:       lo.ToPtr(5 * time.Second),
+				ServiceName:                      new("cli"),
+				MetricsPort:                      new(0),
+				HealthProbePort:                  new(0),
+				KubeClientQPS:                    new(0),
+				KubeClientBurst:                  new(0),
+				EnableProfiling:                  new(true),
+				DisableControllerWarmup:          new(false),
+				DisableLeaderElection:            new(true),
+				DisableClusterStateObservability: new(true),
+				LeaderElectionName:               new("karpenter-controller"),
+				LeaderElectionNamespace:          new("karpenter"),
+				MemoryLimit:                      lo.ToPtr[int64](0),
+				LogLevel:                         new("debug"),
+				LogOutputPaths:                   new("/etc/k8s/test"),
+				LogErrorOutputPaths:              new("/etc/k8s/testerror"),
+				BatchMaxDuration:                 lo.ToPtr(5 * time.Second),
+				BatchIdleDuration:                lo.ToPtr(5 * time.Second),
+				PreferencePolicy:                 lo.ToPtr(options.PreferencePolicyIgnore),
+				MinValuesPolicy:                  lo.ToPtr(options.MinValuesPolicyBestEffort),
 				FeatureGates: test.FeatureGates{
-					ReservedCapacity:        lo.ToPtr(true),
-					NodeRepair:              lo.ToPtr(true),
-					SpotToSpotConsolidation: lo.ToPtr(true),
+					ReservedCapacity:        new(false),
+					NodeRepair:              new(true),
+					SpotToSpotConsolidation: new(true),
+					NodeOverlay:             new(true),
+					StaticCapacity:          new(true),
+					CapacityBuffer:          new(true),
+				},
+				IgnoreDRARequests: new(true),
+				SchedulerConfig: &options.SchedulerConfiguration{
+					PodTopologySpread: &options.PodTopologySpreadConfig{
+						DefaultConstraints: []corev1.TopologySpreadConstraint{{
+							MaxSkew:           1,
+							TopologyKey:       "topology.kubernetes.io/zone",
+							WhenUnsatisfiable: corev1.ScheduleAnyway,
+						}},
+					},
 				},
 			}))
 		})
@@ -172,7 +212,9 @@ var _ = Describe("Options", func() {
 			os.Setenv("KUBE_CLIENT_QPS", "0")
 			os.Setenv("KUBE_CLIENT_BURST", "0")
 			os.Setenv("ENABLE_PROFILING", "true")
+			os.Setenv("DISABLE_CONTROLLER_WARMUP", "false")
 			os.Setenv("DISABLE_LEADER_ELECTION", "true")
+			os.Setenv("DISABLE_CLUSTER_STATE_OBSERVABILITY", "true")
 			os.Setenv("LEADER_ELECTION_NAME", "karpenter-controller")
 			os.Setenv("LEADER_ELECTION_NAMESPACE", "karpenter")
 			os.Setenv("MEMORY_LIMIT", "0")
@@ -181,7 +223,10 @@ var _ = Describe("Options", func() {
 			os.Setenv("LOG_ERROR_OUTPUT_PATHS", "/etc/k8s/testerror")
 			os.Setenv("BATCH_MAX_DURATION", "5s")
 			os.Setenv("BATCH_IDLE_DURATION", "5s")
-			os.Setenv("FEATURE_GATES", "ReservedCapacity=true,SpotToSpotConsolidation=true,NodeRepair=true")
+			os.Setenv("PREFERENCE_POLICY", "Ignore")
+			os.Setenv("MIN_VALUES_POLICY", "BestEffort")
+			os.Setenv("FEATURE_GATES", "ReservedCapacity=false,SpotToSpotConsolidation=true,NodeRepair=true,NodeOverlay=true,StaticCapacity=true,CapacityBuffer=true")
+			os.Setenv("SCHEDULER_CONFIG", `{"podTopologySpread":{"defaultConstraints":[{"maxSkew":1,"topologyKey":"topology.kubernetes.io/zone","whenUnsatisfiable":"ScheduleAnyway"}]}}`)
 			fs = &options.FlagSet{
 				FlagSet: flag.NewFlagSet("karpenter", flag.ContinueOnError),
 			}
@@ -189,25 +234,42 @@ var _ = Describe("Options", func() {
 			err := opts.Parse(fs)
 			Expect(err).To(BeNil())
 			expectOptionsMatch(opts, test.Options(test.OptionsFields{
-				ServiceName:             lo.ToPtr("env"),
-				MetricsPort:             lo.ToPtr(0),
-				HealthProbePort:         lo.ToPtr(0),
-				KubeClientQPS:           lo.ToPtr(0),
-				KubeClientBurst:         lo.ToPtr(0),
-				EnableProfiling:         lo.ToPtr(true),
-				DisableLeaderElection:   lo.ToPtr(true),
-				LeaderElectionName:      lo.ToPtr("karpenter-controller"),
-				LeaderElectionNamespace: lo.ToPtr("karpenter"),
-				MemoryLimit:             lo.ToPtr[int64](0),
-				LogLevel:                lo.ToPtr("debug"),
-				LogOutputPaths:          lo.ToPtr("/etc/k8s/test"),
-				LogErrorOutputPaths:     lo.ToPtr("/etc/k8s/testerror"),
-				BatchMaxDuration:        lo.ToPtr(5 * time.Second),
-				BatchIdleDuration:       lo.ToPtr(5 * time.Second),
+				ServiceName:                      new("env"),
+				MetricsPort:                      new(0),
+				HealthProbePort:                  new(0),
+				KubeClientQPS:                    new(0),
+				KubeClientBurst:                  new(0),
+				EnableProfiling:                  new(true),
+				DisableControllerWarmup:          new(false),
+				DisableLeaderElection:            new(true),
+				DisableClusterStateObservability: new(true),
+				LeaderElectionName:               new("karpenter-controller"),
+				LeaderElectionNamespace:          new("karpenter"),
+				MemoryLimit:                      lo.ToPtr[int64](0),
+				LogLevel:                         new("debug"),
+				LogOutputPaths:                   new("/etc/k8s/test"),
+				LogErrorOutputPaths:              new("/etc/k8s/testerror"),
+				BatchMaxDuration:                 lo.ToPtr(5 * time.Second),
+				BatchIdleDuration:                lo.ToPtr(5 * time.Second),
+				PreferencePolicy:                 lo.ToPtr(options.PreferencePolicyIgnore),
+				MinValuesPolicy:                  lo.ToPtr(options.MinValuesPolicyBestEffort),
 				FeatureGates: test.FeatureGates{
-					ReservedCapacity:        lo.ToPtr(true),
-					NodeRepair:              lo.ToPtr(true),
-					SpotToSpotConsolidation: lo.ToPtr(true),
+					ReservedCapacity:        new(false),
+					NodeRepair:              new(true),
+					SpotToSpotConsolidation: new(true),
+					NodeOverlay:             new(true),
+					StaticCapacity:          new(true),
+					CapacityBuffer:          new(true),
+				},
+				IgnoreDRARequests: new(true),
+				SchedulerConfig: &options.SchedulerConfiguration{
+					PodTopologySpread: &options.PodTopologySpreadConfig{
+						DefaultConstraints: []corev1.TopologySpreadConstraint{{
+							MaxSkew:           1,
+							TopologyKey:       "topology.kubernetes.io/zone",
+							WhenUnsatisfiable: corev1.ScheduleAnyway,
+						}},
+					},
 				},
 			}))
 		})
@@ -218,12 +280,16 @@ var _ = Describe("Options", func() {
 			os.Setenv("KUBE_CLIENT_QPS", "0")
 			os.Setenv("KUBE_CLIENT_BURST", "0")
 			os.Setenv("ENABLE_PROFILING", "true")
+			os.Setenv("DISABLE_CONTROLLER_WARMUP", "false")
 			os.Setenv("DISABLE_LEADER_ELECTION", "true")
+			os.Setenv("DISABLE_CLUSTER_STATE_OBSERVABILITY", "true")
 			os.Setenv("MEMORY_LIMIT", "0")
 			os.Setenv("LOG_LEVEL", "debug")
 			os.Setenv("BATCH_MAX_DURATION", "5s")
 			os.Setenv("BATCH_IDLE_DURATION", "5s")
-			os.Setenv("FEATURE_GATES", "ReservedCapacity=true,SpotToSpotConsolidation=true,NodeRepair=true")
+			os.Setenv("PREFERENCE_POLICY", "Ignore")
+			os.Setenv("MIN_VALUES_POLICY", "BestEffort")
+			os.Setenv("FEATURE_GATES", "ReservedCapacity=false,SpotToSpotConsolidation=true,NodeRepair=true,NodeOverlay=true,StaticCapacity=true,CapacityBuffer=true")
 			fs = &options.FlagSet{
 				FlagSet: flag.NewFlagSet("karpenter", flag.ContinueOnError),
 			}
@@ -233,31 +299,74 @@ var _ = Describe("Options", func() {
 				"--karpenter-service", "cli",
 				"--log-output-paths", "/etc/k8s/test",
 				"--log-error-output-paths", "/etc/k8s/testerror",
+				"--preference-policy", "Respect",
+				"--min-values-policy", "Strict",
 			)
 			Expect(err).To(BeNil())
 			expectOptionsMatch(opts, test.Options(test.OptionsFields{
-				ServiceName:             lo.ToPtr("cli"),
-				MetricsPort:             lo.ToPtr(0),
-				HealthProbePort:         lo.ToPtr(0),
-				KubeClientQPS:           lo.ToPtr(0),
-				KubeClientBurst:         lo.ToPtr(0),
-				EnableProfiling:         lo.ToPtr(true),
-				DisableLeaderElection:   lo.ToPtr(true),
-				LeaderElectionName:      lo.ToPtr("karpenter-leader-election"),
-				LeaderElectionNamespace: lo.ToPtr(""),
-				MemoryLimit:             lo.ToPtr[int64](0),
-				LogLevel:                lo.ToPtr("debug"),
-				LogOutputPaths:          lo.ToPtr("/etc/k8s/test"),
-				LogErrorOutputPaths:     lo.ToPtr("/etc/k8s/testerror"),
-				BatchMaxDuration:        lo.ToPtr(5 * time.Second),
-				BatchIdleDuration:       lo.ToPtr(5 * time.Second),
+				ServiceName:                      new("cli"),
+				MetricsPort:                      new(0),
+				HealthProbePort:                  new(0),
+				KubeClientQPS:                    new(0),
+				KubeClientBurst:                  new(0),
+				EnableProfiling:                  new(true),
+				DisableControllerWarmup:          new(false),
+				DisableLeaderElection:            new(true),
+				DisableClusterStateObservability: new(true),
+				LeaderElectionName:               new("karpenter-leader-election"),
+				LeaderElectionNamespace:          new(""),
+				MemoryLimit:                      lo.ToPtr[int64](0),
+				LogLevel:                         new("debug"),
+				LogOutputPaths:                   new("/etc/k8s/test"),
+				LogErrorOutputPaths:              new("/etc/k8s/testerror"),
+				BatchMaxDuration:                 lo.ToPtr(5 * time.Second),
+				BatchIdleDuration:                lo.ToPtr(5 * time.Second),
+				PreferencePolicy:                 lo.ToPtr(options.PreferencePolicyRespect),
+				MinValuesPolicy:                  lo.ToPtr(options.MinValuesPolicyStrict),
 				FeatureGates: test.FeatureGates{
-					ReservedCapacity:        lo.ToPtr(true),
-					NodeRepair:              lo.ToPtr(true),
-					SpotToSpotConsolidation: lo.ToPtr(true),
+					ReservedCapacity:        new(false),
+					NodeRepair:              new(true),
+					SpotToSpotConsolidation: new(true),
+					NodeOverlay:             new(true),
+					StaticCapacity:          new(true),
+					CapacityBuffer:          new(true),
 				},
+				IgnoreDRARequests: new(true),
 			}))
 		})
+
+		DescribeTable(
+			"should correctly set defaults when a subset of FeatureGates are specified",
+			func(gate string) {
+				expected, args := func() (options.FeatureGates, []string) {
+					expected := new(options.DefaultFeatureGates())
+
+					// Use reflection to find the field for the gate and flip the value
+					gateField := reflect.ValueOf(expected).Elem().FieldByName(gate)
+					Expect(gateField.IsValid()).To(BeTrue())
+					Expect(gateField.Kind()).To(Equal(reflect.Bool))
+					expectedGateVal := !gateField.Bool()
+					gateField.SetBool(expectedGateVal)
+
+					return *expected, []string{"--feature-gates", fmt.Sprintf("%s=%t", gate, expectedGateVal)}
+				}()
+
+				fs = &options.FlagSet{
+					FlagSet: flag.NewFlagSet("karpenter", flag.ContinueOnError),
+				}
+				opts.AddFlags(fs)
+				Expect(opts.Parse(fs, args...)).To(Succeed())
+				Expect(opts.FeatureGates).To(Equal(expected))
+			},
+			Entry("when ReservedCapacity is overridden", "ReservedCapacity"),
+			Entry("when NodeRepair is overridden", "NodeRepair"),
+			Entry("when SpotToSpotConsolidation is overridden", "SpotToSpotConsolidation"),
+			Entry("when NodeOverlay is overridden", "NodeOverlay"),
+			Entry("when StaticCapacity is overridden", "StaticCapacity"),
+			Entry("when CapacityBuffer is overridden", "CapacityBuffer"),
+			Entry("when TerminateFirstDrift is overridden", "TerminateFirstDrift"),
+			Entry("when TerminateFirstRepair is overridden", "TerminateFirstRepair"),
+		)
 	})
 
 	DescribeTable(
@@ -268,6 +377,25 @@ var _ = Describe("Options", func() {
 		},
 		Entry("implicit false", "", false),
 	)
+
+	Context("LegacyNodeRepair", func() {
+		It("should default to false", func() {
+			Expect(opts.Parse(fs)).To(Succeed())
+			Expect(opts.LegacyNodeRepair).To(BeFalse())
+		})
+		It("should be set by CLI flag", func() {
+			Expect(opts.Parse(fs, "--legacy-node-repair")).To(Succeed())
+			Expect(opts.LegacyNodeRepair).To(BeTrue())
+		})
+		It("should be set by environment variable", func() {
+			os.Setenv("LEGACY_NODE_REPAIR", "true")
+			fs = &options.FlagSet{FlagSet: flag.NewFlagSet("karpenter", flag.ContinueOnError)}
+			opts = &options.Options{}
+			opts.AddFlags(fs)
+			Expect(opts.Parse(fs)).To(Succeed())
+			Expect(opts.LegacyNodeRepair).To(BeTrue())
+		})
+	})
 
 	Context("Validation", func() {
 		DescribeTable(
@@ -285,6 +413,160 @@ var _ = Describe("Options", func() {
 			err := opts.Parse(fs, "--log-level", "hello")
 			Expect(err).ToNot(BeNil())
 		})
+		DescribeTable(
+			"should fallback to the default if a non-positive value is provided for CPU_REQUESTS",
+			func(value string) {
+				Expect(opts.Parse(fs, "--cpu-requests", value)).To(Succeed())
+				Expect(opts.CPURequests).To(BeNumerically("==", 1000))
+			},
+			Entry("zero is provided", "0"),
+			Entry("negative value is provided", "-50"),
+		)
+	})
+
+})
+
+var _ = Describe("SchedulerConfiguration", func() {
+	Context("ParseSchedulerConfiguration", func() {
+		It("should return a nil configuration for an empty value", func() {
+			cfg, err := options.ParseSchedulerConfiguration("")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(cfg).To(BeNil())
+		})
+		It("should parse a valid podTopologySpread.defaultConstraints document", func() {
+			cfg, err := options.ParseSchedulerConfiguration(`
+podTopologySpread:
+  defaultConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+    - maxSkew: 3
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: DoNotSchedule
+`)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(cfg).ToNot(BeNil())
+			Expect(cfg.PodTopologySpread).ToNot(BeNil())
+			Expect(cfg.PodTopologySpread.DefaultConstraints).To(HaveLen(2))
+			Expect(cfg.PodTopologySpread.DefaultConstraints[0].MaxSkew).To(BeEquivalentTo(1))
+			Expect(cfg.PodTopologySpread.DefaultConstraints[0].TopologyKey).To(Equal("topology.kubernetes.io/zone"))
+			Expect(cfg.PodTopologySpread.DefaultConstraints[0].WhenUnsatisfiable).To(Equal(corev1.ScheduleAnyway))
+			Expect(cfg.PodTopologySpread.DefaultConstraints[1].WhenUnsatisfiable).To(Equal(corev1.DoNotSchedule))
+		})
+		It("should parse an equivalent JSON document", func() {
+			cfg, err := options.ParseSchedulerConfiguration(`{"podTopologySpread":{"defaultConstraints":[{"maxSkew":1,"topologyKey":"topology.kubernetes.io/zone","whenUnsatisfiable":"ScheduleAnyway"}]}}`)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(cfg.PodTopologySpread.DefaultConstraints).To(HaveLen(1))
+		})
+		It("should fail fast on an unknown field", func() {
+			_, err := options.ParseSchedulerConfiguration(`
+podTopologySpread:
+  defaultConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+notARealField: true
+`)
+			Expect(err).To(HaveOccurred())
+		})
+		It("should fail on malformed YAML", func() {
+			_, err := options.ParseSchedulerConfiguration(`podTopologySpread: {`)
+			Expect(err).To(HaveOccurred())
+		})
+		It("should reject a non-positive maxSkew", func() {
+			_, err := options.ParseSchedulerConfiguration(`
+podTopologySpread:
+  defaultConstraints:
+    - maxSkew: 0
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+`)
+			Expect(err).To(HaveOccurred())
+		})
+		It("should reject a missing topologyKey", func() {
+			_, err := options.ParseSchedulerConfiguration(`
+podTopologySpread:
+  defaultConstraints:
+    - maxSkew: 1
+      whenUnsatisfiable: ScheduleAnyway
+`)
+			Expect(err).To(HaveOccurred())
+		})
+		It("should reject a labelSelector", func() {
+			// Upstream forbids this because selectors are deduced per pod. Accepting one would silently diverge: a
+			// static selector matches an unrelated set of pods in every other workload.
+			_, err := options.ParseSchedulerConfiguration(`
+podTopologySpread:
+  defaultConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app: test
+`)
+			Expect(err).To(HaveOccurred())
+		})
+		It("should reject matchLabelKeys", func() {
+			// matchLabelKeys is inert upstream, since the deduced selector overwrites whatever it merged in.
+			_, err := options.ParseSchedulerConfiguration(`
+podTopologySpread:
+  defaultConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+      matchLabelKeys:
+        - pod-template-hash
+`)
+			Expect(err).To(HaveOccurred())
+		})
+		It("should reject a topologyKey that isn't a valid label name", func() {
+			_, err := options.ParseSchedulerConfiguration(`
+podTopologySpread:
+  defaultConstraints:
+    - maxSkew: 1
+      topologyKey: "not a valid label name"
+      whenUnsatisfiable: ScheduleAnyway
+`)
+			Expect(err).To(HaveOccurred())
+		})
+		It("should reject a duplicated topologyKey and whenUnsatisfiable pair", func() {
+			_, err := options.ParseSchedulerConfiguration(`
+podTopologySpread:
+  defaultConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+    - maxSkew: 3
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+`)
+			Expect(err).To(HaveOccurred())
+		})
+		It("should allow the same topologyKey with a different whenUnsatisfiable", func() {
+			cfg, err := options.ParseSchedulerConfiguration(`
+podTopologySpread:
+  defaultConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+    - maxSkew: 3
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: DoNotSchedule
+`)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(cfg.PodTopologySpread.DefaultConstraints).To(HaveLen(2))
+		})
+		It("should reject an invalid whenUnsatisfiable", func() {
+			_, err := options.ParseSchedulerConfiguration(`
+podTopologySpread:
+  defaultConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: Sometimes
+`)
+			Expect(err).To(HaveOccurred())
+		})
 	})
 })
 
@@ -301,14 +583,26 @@ func expectOptionsMatch(optsA, optsB *options.Options) {
 	Expect(optsA.KubeClientQPS).To(Equal(optsB.KubeClientQPS))
 	Expect(optsA.KubeClientBurst).To(Equal(optsB.KubeClientBurst))
 	Expect(optsA.EnableProfiling).To(Equal(optsB.EnableProfiling))
+	Expect(optsA.DisableControllerWarmup).To(Equal(optsB.DisableControllerWarmup))
 	Expect(optsA.DisableLeaderElection).To(Equal(optsB.DisableLeaderElection))
+	Expect(optsA.DisableClusterStateObservability).To(Equal(optsB.DisableClusterStateObservability))
 	Expect(optsA.MemoryLimit).To(Equal(optsB.MemoryLimit))
 	Expect(optsA.LogLevel).To(Equal(optsB.LogLevel))
 	Expect(optsA.LogOutputPaths).To(Equal(optsB.LogOutputPaths))
 	Expect(optsA.LogErrorOutputPaths).To(Equal(optsB.LogErrorOutputPaths))
 	Expect(optsA.BatchMaxDuration).To(Equal(optsB.BatchMaxDuration))
 	Expect(optsA.BatchIdleDuration).To(Equal(optsB.BatchIdleDuration))
+	Expect(optsA.PreferencePolicy).To(Equal(optsB.PreferencePolicy))
+	Expect(optsA.MinValuesPolicy).To(Equal(optsB.MinValuesPolicy))
 	Expect(optsA.FeatureGates.ReservedCapacity).To(Equal(optsB.FeatureGates.ReservedCapacity))
 	Expect(optsA.FeatureGates.NodeRepair).To(Equal(optsB.FeatureGates.NodeRepair))
+	Expect(optsA.FeatureGates.NodeOverlay).To(Equal(optsB.FeatureGates.NodeOverlay))
+	Expect(optsA.FeatureGates.StaticCapacity).To(Equal(optsB.FeatureGates.StaticCapacity))
+	Expect(optsA.FeatureGates.CapacityBuffer).To(Equal(optsB.FeatureGates.CapacityBuffer))
 	Expect(optsA.FeatureGates.SpotToSpotConsolidation).To(Equal(optsB.FeatureGates.SpotToSpotConsolidation))
+	Expect(optsA.FeatureGates.TerminateFirstDrift).To(Equal(optsB.FeatureGates.TerminateFirstDrift))
+	Expect(optsA.FeatureGates.TerminateFirstRepair).To(Equal(optsB.FeatureGates.TerminateFirstRepair))
+	Expect(optsA.IgnoreDRARequests).To(Equal(optsB.IgnoreDRARequests))
+	Expect(optsA.LegacyNodeRepair).To(Equal(optsB.LegacyNodeRepair))
+	Expect(optsA.SchedulerConfig).To(Equal(optsB.SchedulerConfig))
 }
