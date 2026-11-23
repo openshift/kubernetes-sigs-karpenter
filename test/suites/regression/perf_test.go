@@ -36,15 +36,23 @@ import (
 
 var _ = Describe("Performance", func() {
 	var replicas int
+	var driftTimeout time.Duration
 
 	BeforeEach(func() {
 		replicas = 100
+		driftTimeout = 10 * time.Minute
 
 		if value, ok := os.LookupEnv("KARPENTER_E2E_PERFORMANCE_REPLICAS"); ok {
 			parsed, err := strconv.ParseInt(value, 10, 32)
 			Expect(err).ToNot(HaveOccurred(), "KARPENTER_E2E_PERFORMANCE_REPLICAS must be a positive 32-bit integer")
 			Expect(parsed).To(BeNumerically(">", 0), "KARPENTER_E2E_PERFORMANCE_REPLICAS must be positive")
 			replicas = int(parsed)
+		}
+		if value, ok := os.LookupEnv("KARPENTER_E2E_DRIFT_TIMEOUT"); ok {
+			parsed, err := time.ParseDuration(value)
+			Expect(err).ToNot(HaveOccurred(), "KARPENTER_E2E_DRIFT_TIMEOUT must be a duration")
+			Expect(parsed).To(BeNumerically(">", 0), "KARPENTER_E2E_DRIFT_TIMEOUT must be positive")
+			driftTimeout = parsed
 		}
 	})
 	Context("Provisioning", func() {
@@ -160,7 +168,7 @@ var _ = Describe("Performance", func() {
 				nodeClaims := &v1.NodeClaimList{}
 				g.Expect(env.Client.List(env, nodeClaims, client.MatchingFields{"status.conditions[*].type": v1.ConditionTypeDrifted})).To(Succeed())
 				g.Expect(len(nodeClaims.Items)).To(Equal(0))
-			}).WithTimeout(10 * time.Minute).Should(Succeed())
+			}).WithTimeout(driftTimeout).Should(Succeed())
 			env.TimeIntervalCollector.End("Drift")
 		})
 	})
