@@ -47,15 +47,15 @@ reviews:
     golangci-lint:
       enabled: true
 
-  knowledge_base:
-    code_guidelines:
-      enabled: true
-      filePatterns:
-        - "**/AGENTS.md"
-        - "**/CONTRIBUTING_OPENSHIFT.md"
-    learnings:
-      scope: auto
-    issues:
-      scope: auto
-    pull_requests:
-      scope: auto
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "**/AGENTS.md"
+      - "**/CONTRIBUTING_OPENSHIFT.md"
+  learnings:
+    scope: auto
+  issues:
+    scope: auto
+  pull_requests:
+    scope: auto
