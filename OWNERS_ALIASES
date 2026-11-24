@@ -2,16 +2,17 @@
 
 aliases:
   karpenter-approvers:
+  - LucasAndFlores
   - elmiko
   - enxebre
   - jkyros
   - joelsmith
+  - linkvt
   - maxcao13
   - muraee
   karpenter-reviewers:
+  - LucasAndFlores
   - elmiko
-  - enxebre
-  - jkyros
   - joelsmith
+  - linkvt
   - maxcao13
-  - muraee
