@@ -18,10 +18,10 @@ package terminator_test
 
 import (
 	"context"
-	"sync"
 	"testing"
 	"time"
 
+	"github.com/awslabs/operatorpkg/status"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/samber/lo"
@@ -30,12 +30,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/uuid"
-	clock "k8s.io/utils/clock/testing"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"sigs.k8s.io/karpenter/pkg/apis"
+	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/controllers/node/termination/terminator"
 	"sigs.k8s.io/karpenter/pkg/events"
+	"sigs.k8s.io/karpenter/pkg/metrics"
 	"sigs.k8s.io/karpenter/pkg/operator/options"
 	"sigs.k8s.io/karpenter/pkg/test"
 	. "sigs.k8s.io/karpenter/pkg/test/expectations"
@@ -50,8 +50,6 @@ var queue *terminator.Queue
 var pdb *policyv1.PodDisruptionBudget
 var pod *corev1.Pod
 var node *corev1.Node
-var fakeClock *clock.FakeClock
-var terminatorInstance *terminator.Terminator
 
 func TestAPIs(t *testing.T) {
 	ctx = TestContextWithLogger(t)
@@ -60,11 +58,14 @@ func TestAPIs(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
-	env = test.NewEnvironment(test.WithCRDs(apis.CRDs...), test.WithCRDs(v1alpha1.CRDs...))
+	env = test.NewEnvironment(
+		test.WithCRDs(apis.CRDs...),
+		test.WithCRDs(v1alpha1.CRDs...),
+		test.WithFieldIndexers(test.NodeClaimProviderIDFieldIndexer(ctx)),
+	)
 	ctx = options.ToContext(ctx, test.Options())
 	recorder = test.NewEventRecorder()
-	queue = terminator.NewTestingQueue(env.Client, recorder)
-	terminatorInstance = terminator.NewTerminator(fakeClock, env.Client, queue, recorder)
+	queue = terminator.NewQueue(env.Clock, env.Client, recorder)
 })
 
 var _ = AfterSuite(func() {
@@ -74,7 +75,7 @@ var _ = AfterSuite(func() {
 var _ = BeforeEach(func() {
 	recorder.Reset() // Reset the events that we captured during the run
 	// Shut down the queue and restart it to ensure no races
-	*queue = lo.FromPtr(terminator.NewTestingQueue(env.Client, recorder))
+	*queue = lo.FromPtr(terminator.NewQueue(env.Clock, env.Client, recorder))
 })
 
 var _ = AfterEach(func() {
@@ -94,25 +95,28 @@ var _ = Describe("Eviction/Queue", func() {
 				Labels: testLabels,
 			},
 		})
-		node = test.Node(test.NodeOptions{ProviderID: "123456789"})
-		terminator.NodesEvictionRequestsTotal.Reset()
+		node = test.Node(test.NodeOptions{ObjectMeta: metav1.ObjectMeta{Name: pod.Spec.NodeName, Namespace: pod.Namespace}, ProviderID: "my-provider"})
+
+		terminator.PodsEvictionRequestsTotal.Reset()
+		terminator.PodsDrainedTotal.Reset()
 	})
 
 	Context("Eviction API", func() {
 		It("should succeed with no event when the pod is not found", func() {
-			Expect(queue.Evict(ctx, terminator.NewQueueKey(pod, node.Spec.ProviderID))).To(BeTrue())
+			ExpectObjectReconciled(ctx, env.Client, queue, pod)
 			Expect(recorder.Events()).To(HaveLen(0))
 		})
 		It("should succeed with no event when the pod UID conflicts", func() {
-			ExpectApplied(ctx, env.Client, pod)
-			Expect(queue.Evict(ctx, terminator.QueueKey{NamespacedName: client.ObjectKeyFromObject(pod), UID: uuid.NewUUID()})).To(BeTrue())
-			ExpectMetricCounterValue(terminator.NodesEvictionRequestsTotal, 1, map[string]string{terminator.CodeLabel: "409"})
-			Expect(recorder.Events()).To(HaveLen(0))
+			ExpectApplied(ctx, env.Client, pod, node)
+			queue.Add(nil, pod)
+			pod.UID = uuid.NewUUID()
+			Expect(queue.Has(pod)).To(BeFalse())
 		})
 		It("should succeed with an evicted event when there are no PDBs", func() {
-			ExpectApplied(ctx, env.Client, pod)
-			Expect(queue.Evict(ctx, terminator.NewQueueKey(pod, node.Spec.ProviderID))).To(BeTrue())
-			ExpectMetricCounterValue(terminator.NodesEvictionRequestsTotal, 1, map[string]string{terminator.CodeLabel: "200"})
+			ExpectApplied(ctx, env.Client, pod, node)
+			queue.Add(nil, pod)
+			ExpectObjectReconciled(ctx, env.Client, queue, pod)
+			ExpectMetricCounterValue(terminator.PodsEvictionRequestsTotal, 1, map[string]string{terminator.CodeLabel: "200"})
 			Expect(recorder.Calls(events.Evicted)).To(Equal(1))
 		})
 		It("should succeed with no event when there are PDBs that allow an eviction", func() {
@@ -120,77 +124,244 @@ var _ = Describe("Eviction/Queue", func() {
 				Labels:         testLabels,
 				MaxUnavailable: &intstr.IntOrString{IntVal: 1},
 			})
-			ExpectApplied(ctx, env.Client, pod)
-			Expect(queue.Evict(ctx, terminator.NewQueueKey(pod, node.Spec.ProviderID))).To(BeTrue())
+			ExpectApplied(ctx, env.Client, pod, node)
+			queue.Add(nil, pod)
+			ExpectObjectReconciled(ctx, env.Client, queue, pod)
 			Expect(recorder.Calls(events.Evicted)).To(Equal(1))
 		})
 		It("should return a NodeDrainError event when a PDB is blocking", func() {
-			ExpectApplied(ctx, env.Client, pdb, pod)
-			Expect(queue.Evict(ctx, terminator.NewQueueKey(pod, node.Spec.ProviderID))).To(BeFalse())
-			Expect(recorder.Calls(events.FailedDraining)).To(Equal(1))
+			ExpectApplied(ctx, env.Client, pdb, pod, node)
+			ExpectManualBinding(ctx, env.Client, pod, node)
+			queue.Add(nil, pod)
+			result := ExpectObjectReconciled(ctx, env.Client, queue, pod)
+			//nolint:staticcheck
+			Expect(result.Requeue).To(BeTrue())
+			ExpectMetricCounterValue(terminator.PodsEvictionRequestsTotal, 1, map[string]string{terminator.CodeLabel: "429"})
+			e := recorder.Events()
+			Expect(e).To(HaveLen(1))
+			Expect(e[0].Reason).To(Equal(events.FailedDraining))
+			Expect(e[0].Message).To(ContainSubstring("evicting pod violates a PDB"))
 		})
-		It("should fail when two PDBs refer to the same pod", func() {
+		It("should return a NodeDrainError event when two PDBs refer to the same pod", func() {
 			pdb2 := test.PodDisruptionBudget(test.PDBOptions{
 				Labels:         testLabels,
 				MaxUnavailable: &intstr.IntOrString{IntVal: 0},
 			})
-			ExpectApplied(ctx, env.Client, pdb, pdb2, pod)
-			Expect(queue.Evict(ctx, terminator.NewQueueKey(pod, node.Spec.ProviderID))).To(BeFalse())
-			ExpectMetricCounterValue(terminator.NodesEvictionRequestsTotal, 1, map[string]string{terminator.CodeLabel: "500"})
+			ExpectApplied(ctx, env.Client, pdb, pdb2, pod, node)
+			ExpectManualBinding(ctx, env.Client, pod, node)
+			queue.Add(nil, pod)
+			result := ExpectObjectReconciled(ctx, env.Client, queue, pod)
+			//nolint:staticcheck
+			Expect(result.Requeue).To(BeTrue())
+			ExpectMetricCounterValue(terminator.PodsEvictionRequestsTotal, 1, map[string]string{terminator.CodeLabel: "500"})
+			e := recorder.Events()
+			Expect(e).To(HaveLen(1))
+			Expect(e[0].Reason).To(Equal(events.FailedDraining))
+			Expect(e[0].Message).To(ContainSubstring("eviction does not support multiple PDBs"))
 		})
 		It("should ensure that calling Evict() is valid while making Add() calls", func() {
-			cancelCtx, cancel := context.WithCancel(ctx)
-			wg := sync.WaitGroup{}
-			DeferCleanup(func() {
-				cancel()
-				wg.Wait() // Ensure that we wait for reconcile loop to finish so that we don't get a RACE
+			// Ensure that we add enough pods to the queue while we are pulling items off of the queue (enough to trigger a DATA RACE)
+			pods := test.Pods(1000)
+			cancelContext, cancelFunc := context.WithCancel(ctx)
+			defer cancelFunc()
+
+			for _, pod := range pods {
+				go func() {
+					for {
+						if cancelContext.Err() != nil {
+							return
+						}
+						queue.Add(nil, pod)
+					}
+				}()
+			}
+
+			for _, pod = range pods {
+				ExpectObjectReconciled(ctx, env.Client, queue, pod)
+			}
+
+		})
+		It("should increment PodsDrainedTotal metric when a pod is evicted", func() {
+			ExpectApplied(ctx, env.Client, pod, node)
+			queue.Add(nil, pod)
+			ExpectObjectReconciled(ctx, env.Client, queue, pod)
+			ExpectMetricCounterValue(terminator.PodsDrainedTotal, 1, map[string]string{metrics.ReasonLabel: ""})
+			ExpectMetricCounterValue(terminator.PodsEvictionRequestsTotal, 1, map[string]string{terminator.CodeLabel: "200"})
+			Expect(recorder.Calls(events.Evicted)).To(Equal(1))
+		})
+		It("should increment PodsDrainedTotal metric with specific reason when a pod is evicted", func() {
+			nodeClaim := test.NodeClaim(v1.NodeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-nodeclaim",
+				},
+				Status: v1.NodeClaimStatus{
+					ProviderID: node.Spec.ProviderID,
+					NodeName:   node.Name,
+				},
+			})
+			nodeClaim.StatusConditions().Set(status.Condition{
+				Type:    v1.ConditionTypeDisruptionReason,
+				Status:  metav1.ConditionTrue,
+				Reason:  "SpotInterruption",
+				Message: "Node is being interrupted",
 			})
 
-			// Keep calling Reconcile() for the entirety of this test
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			ExpectApplied(ctx, env.Client, nodeClaim, node, pod)
+			ExpectManualBinding(ctx, env.Client, pod, node)
+			queue.Add(nil, pod)
+			ExpectObjectReconciled(ctx, env.Client, queue, pod)
 
-				for {
-					ExpectSingletonReconciled(ctx, queue)
-					if cancelCtx.Err() != nil {
-						return
-					}
-				}
-			}()
-
-			// Ensure that we add enough pods to the queue while we are pulling items off of the queue (enough to trigger a DATA RACE)
-			for i := 0; i < 10000; i++ {
-				queue.Add(node, test.Pod())
-			}
+			ExpectMetricCounterValue(terminator.PodsDrainedTotal, 1, map[string]string{metrics.ReasonLabel: "SpotInterruption"})
+			ExpectMetricCounterValue(terminator.PodsEvictionRequestsTotal, 1, map[string]string{terminator.CodeLabel: "200"})
+			Expect(recorder.Calls(events.Evicted)).To(Equal(1))
 		})
 	})
 
-	Context("Pod Deletion API", func() {
-		It("should not delete a pod with no nodeTerminationTime", func() {
-			ExpectApplied(ctx, env.Client, pod)
-
-			Expect(terminatorInstance.DeleteExpiringPods(ctx, []*corev1.Pod{pod}, nil)).To(Succeed())
-			ExpectExists(ctx, env.Client, pod)
-			Expect(recorder.Calls(events.Disrupted)).To(Equal(0))
-		})
-		It("should not delete a pod with terminationGracePeriodSeconds still remaining before nodeTerminationTime", func() {
-			pod.Spec.TerminationGracePeriodSeconds = lo.ToPtr[int64](60)
-			ExpectApplied(ctx, env.Client, pod)
-
-			nodeTerminationTime := time.Now().Add(time.Minute * 5)
-			Expect(terminatorInstance.DeleteExpiringPods(ctx, []*corev1.Pod{pod}, &nodeTerminationTime)).To(Succeed())
-			ExpectExists(ctx, env.Client, pod)
-			Expect(recorder.Calls(events.Disrupted)).To(Equal(0))
-		})
-		It("should delete a pod with less than terminationGracePeriodSeconds remaining before nodeTerminationTime", func() {
+	Context("Pod Force-Delete via Queue", func() {
+		It("should force-delete a pod via the queue, bypassing PDBs", func() {
 			pod.Spec.TerminationGracePeriodSeconds = lo.ToPtr[int64](120)
-			ExpectApplied(ctx, env.Client, pod)
+			ExpectApplied(ctx, env.Client, pdb, pod, node)
+			ExpectManualBinding(ctx, env.Client, pod, node)
 
-			nodeTerminationTime := time.Now().Add(time.Minute * 1)
-			Expect(terminatorInstance.DeleteExpiringPods(ctx, []*corev1.Pod{pod}, &nodeTerminationTime)).To(Succeed())
-			ExpectNotFound(ctx, env.Client, pod)
+			nodeTerminationTime := env.Clock.Now().Add(time.Minute * 1)
+			queue.Add(&nodeTerminationTime, pod)
+			ExpectObjectReconciled(ctx, env.Client, queue, pod)
+			// The blocking PDB (MaxUnavailable: 0) would reject an eviction; force-delete
+			// issues a Delete directly, so the pod gets a deletion timestamp regardless.
+			pod = ExpectExists(ctx, env.Client, pod)
+			Expect(pod.DeletionTimestamp.IsZero()).To(BeFalse())
 			Expect(recorder.Calls(events.Disrupted)).To(Equal(1))
+			ExpectMetricCounterValue(terminator.PodsDrainedTotal, 1, map[string]string{metrics.ReasonLabel: ""})
+			// The queue entry is cleared once the force-delete succeeds.
+			Expect(queue.Has(pod)).To(BeFalse())
+		})
+		It("should upgrade a pod already enqueued for eviction to force-delete", func() {
+			pod.Spec.TerminationGracePeriodSeconds = lo.ToPtr[int64](120)
+			ExpectApplied(ctx, env.Client, pdb, pod, node)
+			ExpectManualBinding(ctx, env.Client, pod, node)
+
+			queue.Add(nil, pod)
+			nodeTerminationTime := env.Clock.Now().Add(time.Minute * 1)
+			queue.Add(&nodeTerminationTime, pod)
+
+			ExpectObjectReconciled(ctx, env.Client, queue, pod)
+			// Had the deadline stayed nil, the blocking PDB would reject the eviction and
+			// the pod would have no deletion timestamp. The timestamp proves the upgrade took effect.
+			pod = ExpectExists(ctx, env.Client, pod)
+			Expect(pod.DeletionTimestamp.IsZero()).To(BeFalse())
+			Expect(recorder.Calls(events.Disrupted)).To(Equal(1))
+			ExpectMetricCounterValue(terminator.PodsDrainedTotal, 1, map[string]string{metrics.ReasonLabel: ""})
+		})
+		It("should keep the earlier deadline when Add is called again with a looser one", func() {
+			// Once a pod has a force-delete deadline, a later Add must not push it out — otherwise
+			// an in-flight force-delete could be downgraded to a PDB-respecting eviction.
+			pod.Spec.TerminationGracePeriodSeconds = lo.ToPtr[int64](120)
+			ExpectApplied(ctx, env.Client, pdb, pod, node)
+			ExpectManualBinding(ctx, env.Client, pod, node)
+
+			// Tight deadline first: TGP=120s doesn't fit in the remaining 60s → force-delete.
+			tightDeadline := env.Clock.Now().Add(time.Minute * 1)
+			queue.Add(&tightDeadline, pod)
+			// Looser deadline second: TGP=120s fits in the remaining 1h → normal eviction would suffice.
+			looseDeadline := env.Clock.Now().Add(time.Hour)
+			queue.Add(&looseDeadline, pod)
+
+			ExpectObjectReconciled(ctx, env.Client, queue, pod)
+			// Tight deadline retained, so force-delete triggers despite the blocking PDB.
+			pod = ExpectExists(ctx, env.Client, pod)
+			Expect(pod.DeletionTimestamp.IsZero()).To(BeFalse())
+			Expect(recorder.Calls(events.Disrupted)).To(Equal(1))
+		})
+		It("should never force-delete a pod queued with a timeout", func() {
+			pod.Spec.TerminationGracePeriodSeconds = lo.ToPtr[int64](120)
+			ExpectApplied(ctx, env.Client, pdb, pod, node)
+			ExpectManualBinding(ctx, env.Client, pod, node)
+
+			queue.AddWithTimeout(env.Clock.Now().Add(time.Minute), pod)
+			ExpectObjectReconciled(ctx, env.Client, queue, pod)
+			Expect(ExpectExists(ctx, env.Client, pod).DeletionTimestamp.IsZero()).To(BeTrue())
+			Expect(queue.Has(pod)).To(BeTrue())
+		})
+		It("should drop a pod queued with a timeout once the timeout passes, leaving it in place", func() {
+			ExpectApplied(ctx, env.Client, pdb, pod, node)
+			ExpectManualBinding(ctx, env.Client, pod, node)
+
+			queue.AddWithTimeout(env.Clock.Now().Add(time.Minute), pod)
+			env.Clock.Step(2 * time.Minute)
+			ExpectObjectReconciled(ctx, env.Client, queue, pod)
+			Expect(queue.Has(pod)).To(BeFalse())
+			Expect(ExpectExists(ctx, env.Client, pod).DeletionTimestamp.IsZero()).To(BeTrue())
+			Expect(recorder.Calls(events.Disrupted)).To(Equal(0))
+		})
+		It("should replace a timeout with a force-delete deadline", func() {
+			pod.Spec.TerminationGracePeriodSeconds = lo.ToPtr[int64](120)
+			ExpectApplied(ctx, env.Client, pdb, pod, node)
+			ExpectManualBinding(ctx, env.Client, pod, node)
+
+			queue.AddWithTimeout(env.Clock.Now().Add(-time.Minute), pod)
+			nodeTerminationTime := env.Clock.Now().Add(time.Minute)
+			queue.Add(&nodeTerminationTime, pod)
+			ExpectObjectReconciled(ctx, env.Client, queue, pod)
+			Expect(ExpectExists(ctx, env.Client, pod).DeletionTimestamp.IsZero()).To(BeFalse())
+			Expect(recorder.Calls(events.Disrupted)).To(Equal(1))
+		})
+		It("should not downgrade a force-delete deadline to a timeout", func() {
+			pod.Spec.TerminationGracePeriodSeconds = lo.ToPtr[int64](120)
+			ExpectApplied(ctx, env.Client, pdb, pod, node)
+			ExpectManualBinding(ctx, env.Client, pod, node)
+
+			nodeTerminationTime := env.Clock.Now().Add(time.Minute)
+			queue.Add(&nodeTerminationTime, pod)
+			queue.AddWithTimeout(env.Clock.Now().Add(time.Hour), pod)
+			ExpectObjectReconciled(ctx, env.Client, queue, pod)
+			Expect(ExpectExists(ctx, env.Client, pod).DeletionTimestamp.IsZero()).To(BeFalse())
+		})
+		It("should clean up the queue entry when the pod is already gone", func() {
+			nodeTerminationTime := env.Clock.Now().Add(time.Minute * 1)
+			queue.Add(&nodeTerminationTime, pod)
+			// The pod was never created, so the force-delete sees a NotFound and clears the entry.
+			// Reconcile is called directly because AsReconciler (used by ExpectObjectReconciled)
+			// would short-circuit on the missing pod before reaching the queue.
+			_, err := queue.Reconcile(ctx, pod)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(queue.Has(pod)).To(BeFalse())
+		})
+		It("should clamp gracePeriodSeconds to >= 1 when nodeTerminationTime is in the past", func() {
+			// Use a finalizer so envtest does not immediately garbage-collect the pod after the
+			// delete call. Without a finalizer, the pod disappears before we can read back the
+			// DeletionTimestamp that the API server stamped on it, making it impossible to
+			// verify that the clamp produced a graceful delete (not a force-delete).
+			pod.Spec.TerminationGracePeriodSeconds = lo.ToPtr[int64](120)
+			pod.Finalizers = []string{"karpenter.sh/test-finalizer"}
+			ExpectApplied(ctx, env.Client, pod)
+			DeferCleanup(func() {
+				// Remove the finalizer so AfterEach's ExpectCleanedUp can delete the pod.
+				ExpectFinalizersRemoved(ctx, env.Client, pod)
+			})
+
+			// Set the termination time 1 hour in the past: remaining = -3600s.
+			// Without the clamp the grace period would be <=0, sending gracePeriodSeconds=0
+			// to the API (force-delete). The clamp must produce >= 1.
+			pastTerminationTime := env.Clock.Now().Add(-1 * time.Hour)
+			queue.Add(&pastTerminationTime, pod)
+			ExpectObjectReconciled(ctx, env.Client, queue, pod)
+
+			// Verify the delete was graceful (not a force-delete): the Disrupted event must have
+			// been published and contain "1 seconds of grace-period" in the message, proving the
+			// clamp produced gracePeriodSeconds=1 (not 0).
+			// Note: DeletionGracePeriodSeconds on the re-fetched pod may be 0 because the API
+			// server recomputes it as floor(DeletionTimestamp-now()); with a 1s grace period it
+			// decays to 0 during the round-trip. The event message is captured at delete time.
+			Expect(recorder.Calls(events.Disrupted)).To(Equal(1))
+			evts := recorder.Events()
+			Expect(evts).To(HaveLen(1))
+			Expect(evts[0].Message).To(ContainSubstring("granted 1 seconds of grace-period"))
+
+			// Also verify the pod is terminating (DeletionTimestamp set), not force-deleted
+			// (force-delete would bypass the graceful termination and remove the object immediately
+			// even with a finalizer in older Kubernetes; a set DeletionTimestamp confirms graceful).
+			pod = ExpectExists(ctx, env.Client, pod)
+			Expect(pod.DeletionTimestamp).ToNot(BeNil())
 		})
 	})
 })

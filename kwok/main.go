@@ -17,10 +17,13 @@ limitations under the License.
 package main
 
 import (
+	"github.com/samber/lo"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	kwok "sigs.k8s.io/karpenter/kwok/cloudprovider"
+	"sigs.k8s.io/karpenter/pkg/cloudprovider/overlay"
 	"sigs.k8s.io/karpenter/pkg/controllers"
+	"sigs.k8s.io/karpenter/pkg/controllers/node/health"
 	"sigs.k8s.io/karpenter/pkg/controllers/state"
 	"sigs.k8s.io/karpenter/pkg/operator"
 )
@@ -32,8 +35,10 @@ func main() {
 		log.FromContext(ctx).Error(err, "failed constructing instance types")
 	}
 
-	cloudProvider := kwok.NewCloudProvider(ctx, op.GetClient(), instanceTypes)
-	clusterState := state.NewCluster(op.Clock, op.GetClient(), cloudProvider)
+	overlayUndecoratedCloudProvider := kwok.NewCloudProvider(ctx, op.GetClient(), instanceTypes)
+	cloudProvider := overlay.Decorate(overlayUndecoratedCloudProvider, op.GetClient(), op.InstanceTypeStore)
+	repairPolicyMatcher := lo.Must(health.NewRepairPolicyMatcher(ctx, cloudProvider))
+	clusterState := state.NewCluster(op.Clock, op.GetClient(), cloudProvider, state.WithRepairPolicyMatcher(repairPolicyMatcher))
 	op.
 		WithControllers(ctx, controllers.NewControllers(
 			ctx,
@@ -42,6 +47,9 @@ func main() {
 			op.GetClient(),
 			op.EventRecorder,
 			cloudProvider,
+			overlayUndecoratedCloudProvider,
 			clusterState,
+			op.InstanceTypeStore,
+			op.PredictionStore,
 		)...).Start(ctx)
 }

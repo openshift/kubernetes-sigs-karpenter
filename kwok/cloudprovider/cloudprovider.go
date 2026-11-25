@@ -19,23 +19,27 @@ package kwok
 import (
 	"context"
 	_ "embed"
+	stderrors "errors"
 	"fmt"
+	"maps"
 	"math/rand"
 	"strings"
 	"time"
 
+	"github.com/awslabs/operatorpkg/serrors"
 	"github.com/awslabs/operatorpkg/status"
-	"github.com/docker/docker/pkg/namesgenerator"
 	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
+	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"sigs.k8s.io/karpenter/kwok/apis/v1alpha1"
+	kwokutils "sigs.k8s.io/karpenter/kwok/utils"
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/cloudprovider"
 	"sigs.k8s.io/karpenter/pkg/scheduling"
@@ -65,6 +69,9 @@ func (c CloudProvider) Create(ctx context.Context, nodeClaim *v1.NodeClaim) (*v1
 			return nil, cloudprovider.NewInsufficientCapacityError(fmt.Errorf("resolving node class from nodeclaim, %w", err))
 		}
 		return nil, fmt.Errorf("resolving node class from nodeclaim, %w", err)
+	}
+	if status := nodeClass.StatusConditions().Get(status.ConditionReady); status.IsFalse() {
+		return nil, cloudprovider.NewNodeClassNotReadyError(stderrors.New(status.Message))
 	}
 	// Kick-off a goroutine to allow us to asynchronously register nodes
 	// We're fine to leak this because failed registration can also happen in real providers
@@ -143,6 +150,26 @@ func (c CloudProvider) IsDrifted(ctx context.Context, nodeClaim *v1.NodeClaim) (
 	return "", nil
 }
 
+// Reboot simulates an in-place restart. KWOK has no instance to restart, so it gives the Node a new boot ID,
+// which is what the reboot controller observes as proof of a new boot; the simulated kubelet never goes NotReady,
+// so the node rejoins as soon as the new boot is observed. The boot ID derives from the operationID, so a retried
+// request for the same reboot is idempotent.
+func (c CloudProvider) Reboot(ctx context.Context, nodeClaim *v1.NodeClaim, operationID string) error {
+	if nodeClaim.Status.NodeName == "" {
+		return serrors.Wrap(fmt.Errorf("rebooting nodeclaim, node is not registered"), "NodeClaim", klog.KObj(nodeClaim))
+	}
+	node := &corev1.Node{}
+	if err := c.kubeClient.Get(ctx, types.NamespacedName{Name: nodeClaim.Status.NodeName}, node); err != nil {
+		return fmt.Errorf("rebooting node, %w", err)
+	}
+	stored := node.DeepCopy()
+	node.Status.NodeInfo.BootID = fmt.Sprintf("kwok-%s", operationID)
+	if err := c.kubeClient.Status().Patch(ctx, node, client.MergeFrom(stored)); err != nil {
+		return fmt.Errorf("rebooting node, %w", err)
+	}
+	return nil
+}
+
 func (c CloudProvider) Name() string {
 	return "kwok"
 }
@@ -151,8 +178,60 @@ func (c CloudProvider) GetSupportedNodeClasses() []status.Object {
 	return []status.Object{&v1alpha1.KWOKNodeClass{}}
 }
 
+// KWOKUnhealthyCondition is a node condition the KWOK reference provider uses to SIMULATE an unhealthy node for
+// node-repair testing. KWOK's node lifecycle only manages NodeReady + the node Lease, so an injected Ready=False/Unknown
+// is reverted by the heartbeat stage and does not hold. A custom condition like this one is NOT managed by KWOK, so once
+// injected it persists (the node-heartbeat-with-lease stage in hack/kwok/stages re-emits it on every heartbeat). This
+// lets e2e tests exercise node repair deterministically, and models the kind of out-of-band unhealthy signal a
+// node-monitoring agent surfaces while the kubelet still reports Ready=True. The literal must stay in sync with the
+// hack/kwok/stages/node-heartbeat-with-lease.yaml stage template.
+const KWOKUnhealthyCondition corev1.NodeConditionType = "KWOKUnhealthy"
+
+// KWOKRebootRequiredCondition is a simulated reboot-clearable fault that KWOK's repair policies remediate with a
+// reboot, so the reboot action can be exercised end-to-end on KWOK. Like KWOKUnhealthyCondition, the
+// node-heartbeat-with-lease stage re-emits it while present. It's a separate condition type rather than a
+// KWOKUnhealthy reason because, when several policies are eligible for one condition, repair takes the most
+// disruptive action, so a reboot reason would always lose to KWOKUnhealthy's replace policy.
+const KWOKRebootRequiredCondition corev1.NodeConditionType = "KWOKRebootRequired"
+
 func (c CloudProvider) RepairPolicies() []cloudprovider.RepairPolicy {
-	return []cloudprovider.RepairPolicy{}
+	return []cloudprovider.RepairPolicy{
+		// Supported Kubelet Node Conditions
+		{
+			ConditionType:          corev1.NodeReady,
+			ConditionStatus:        corev1.ConditionFalse,
+			TolerationDuration:     10 * time.Minute,
+			TerminationGracePeriod: lo.ToPtr(time.Duration(0)),
+			Action:                 cloudprovider.ReplaceNode,
+		},
+		{
+			ConditionType:          corev1.NodeReady,
+			ConditionStatus:        corev1.ConditionUnknown,
+			ReasonRegex:            ".*",
+			TolerationDuration:     10 * time.Minute,
+			TerminationGracePeriod: lo.ToPtr(time.Duration(0)),
+			Action:                 cloudprovider.ReplaceNode,
+		},
+		// Simulated faults (see KWOKUnhealthyCondition and KWOKRebootRequiredCondition). A short toleration and an explicit
+		// termination grace period keep e2e repair tests fast and let them exercise the drain/TGP path deterministically.
+		// Ready=False is the policy set's single default fallback, so these carry a ReasonRegex and an explicit Action.
+		{
+			ConditionType:          KWOKUnhealthyCondition,
+			ConditionStatus:        corev1.ConditionTrue,
+			ReasonRegex:            ".*",
+			TolerationDuration:     30 * time.Second,
+			TerminationGracePeriod: lo.ToPtr(45 * time.Second),
+			Action:                 cloudprovider.ReplaceNode,
+		},
+		{
+			ConditionType:          KWOKRebootRequiredCondition,
+			ConditionStatus:        corev1.ConditionTrue,
+			ReasonRegex:            ".*",
+			TolerationDuration:     30 * time.Second,
+			TerminationGracePeriod: lo.ToPtr(time.Minute),
+			Action:                 cloudprovider.RebootNode,
+		},
+	}
 }
 
 func (c CloudProvider) getInstanceType(instanceTypeName string) (*cloudprovider.InstanceType, error) {
@@ -160,15 +239,14 @@ func (c CloudProvider) getInstanceType(instanceTypeName string) (*cloudprovider.
 		return it.Name == instanceTypeName
 	})
 	if !found {
-		return nil, fmt.Errorf("unable to find instance type %q", instanceTypeName)
+		return nil, serrors.Wrap(fmt.Errorf("unable to find instance type"), "instance-type", instanceTypeName)
 	}
 	return it, nil
 }
 
 func (c CloudProvider) toNode(nodeClaim *v1.NodeClaim) (*corev1.Node, error) {
-	newName := strings.ReplaceAll(namesgenerator.GetRandomName(0), "_", "-")
 	//nolint
-	newName = fmt.Sprintf("%s-%d", newName, rand.Uint32())
+	newName := fmt.Sprintf("kwok-%s-%s-%d", nodeClaim.Name, kwokutils.RandomName(), rand.Uint32())
 
 	requirements := scheduling.NewNodeSelectorRequirementsWithMinValues(nodeClaim.Spec.Requirements...)
 	req, found := lo.Find(nodeClaim.Spec.Requirements, func(req v1.NodeSelectorRequirementWithMinValues) bool {
@@ -184,7 +262,7 @@ func (c CloudProvider) toNode(nodeClaim *v1.NodeClaim) (*corev1.Node, error) {
 	for _, val := range req.Values {
 		it, err := c.getInstanceType(val)
 		if err != nil {
-			return nil, fmt.Errorf("instance type %s not found", val)
+			return nil, serrors.Wrap(fmt.Errorf("instance type not found"), "instance-type", val)
 		}
 
 		availableOfferings := it.Offerings.Available().Compatible(requirements)
@@ -208,8 +286,11 @@ func (c CloudProvider) toNode(nodeClaim *v1.NodeClaim) (*corev1.Node, error) {
 			Taints:     []corev1.Taint{v1.UnregisteredNoExecuteTaint},
 		},
 		Status: corev1.NodeStatus{
-			Capacity:    instanceType.Capacity,
-			Allocatable: instanceType.Allocatable(),
+			// KWOK nodes don't support overriding Karpenter's WellKnownResources,
+			// so we only apply resource requests, since NodeOverlay will not apply.
+			// If this changes in the future, we'll need to update capacity and allocatable values for KWOK nodes.
+			Capacity:    nodeClaim.Spec.Resources.Requests,
+			Allocatable: lo.Assign(nodeClaim.Spec.Resources.Requests, instanceType.Allocatable()),
 			Phase:       corev1.NodePending,
 		},
 	}, nil
@@ -218,9 +299,7 @@ func (c CloudProvider) toNode(nodeClaim *v1.NodeClaim) (*corev1.Node, error) {
 func addInstanceLabels(labels map[string]string, instanceType *cloudprovider.InstanceType, nodeClaim *v1.NodeClaim, offering *cloudprovider.Offering) map[string]string {
 	ret := make(map[string]string, len(labels))
 	// start with labels on the nodeclaim
-	for k, v := range labels {
-		ret[k] = v
-	}
+	maps.Copy(ret, labels)
 
 	// add the derived nodeclaim requirement labels
 	for _, r := range nodeClaim.Spec.Requirements {
@@ -255,9 +334,7 @@ func addInstanceLabels(labels map[string]string, instanceType *cloudprovider.Ins
 
 func addKwokAnnotation(annotations map[string]string) map[string]string {
 	ret := make(map[string]string, len(annotations)+1)
-	for k, v := range annotations {
-		ret[k] = v
-	}
+	maps.Copy(ret, annotations)
 	ret[v1alpha1.KwokLabelKey] = v1alpha1.KwokLabelValue
 	return ret
 }

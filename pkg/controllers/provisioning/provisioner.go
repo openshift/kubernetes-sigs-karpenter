@@ -20,17 +20,24 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
 	"github.com/awslabs/operatorpkg/option"
+	"github.com/awslabs/operatorpkg/reconciler"
+	"github.com/awslabs/operatorpkg/serrors"
 	"github.com/awslabs/operatorpkg/singleton"
 	"github.com/awslabs/operatorpkg/status"
+
+	"sigs.k8s.io/karpenter/pkg/state/virtualpods"
+
 	"github.com/samber/lo"
 	"go.uber.org/multierr"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/clock"
@@ -38,18 +45,20 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"sigs.k8s.io/karpenter/pkg/operator/options"
 
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/cloudprovider"
+	"sigs.k8s.io/karpenter/pkg/controllers/dynamicresources/deviceallocation"
 	scheduler "sigs.k8s.io/karpenter/pkg/controllers/provisioning/scheduling"
 	"sigs.k8s.io/karpenter/pkg/controllers/state"
 	"sigs.k8s.io/karpenter/pkg/events"
 	"sigs.k8s.io/karpenter/pkg/metrics"
 	"sigs.k8s.io/karpenter/pkg/operator/injection"
 	"sigs.k8s.io/karpenter/pkg/scheduling"
+	"sigs.k8s.io/karpenter/pkg/scheduling/dynamicresources"
+	"sigs.k8s.io/karpenter/pkg/utils/daemonset"
 	nodeutils "sigs.k8s.io/karpenter/pkg/utils/node"
 	nodepoolutils "sigs.k8s.io/karpenter/pkg/utils/nodepool"
 	"sigs.k8s.io/karpenter/pkg/utils/pretty"
@@ -73,29 +82,33 @@ func WithReason(reason string) func(*LaunchOptions) {
 
 // Provisioner waits for enqueued pods, batches them, creates capacity and binds the pods to the capacity.
 type Provisioner struct {
-	cloudProvider  cloudprovider.CloudProvider
-	kubeClient     client.Client
-	batcher        *Batcher[types.UID]
-	volumeTopology *scheduler.VolumeTopology
-	cluster        *state.Cluster
-	recorder       events.Recorder
-	cm             *pretty.ChangeMonitor
-	clock          clock.Clock
+	cloudProvider              cloudprovider.CloudProvider
+	kubeClient                 client.Client
+	batcher                    *Batcher[types.UID]
+	volumeTopology             *scheduler.VolumeTopology
+	cluster                    *state.Cluster
+	recorder                   events.Recorder
+	cm                         *pretty.ChangeMonitor
+	clock                      clock.Clock
+	deviceAllocationController *deviceallocation.Controller
+	virtualPodCache            *virtualpods.Cache
 }
 
 func NewProvisioner(kubeClient client.Client, recorder events.Recorder,
 	cloudProvider cloudprovider.CloudProvider, cluster *state.Cluster,
-	clock clock.Clock,
+	clock clock.Clock, deviceAllocationController *deviceallocation.Controller, virtualPodCache *virtualpods.Cache,
 ) *Provisioner {
 	p := &Provisioner{
-		batcher:        NewBatcher[types.UID](clock),
-		cloudProvider:  cloudProvider,
-		kubeClient:     kubeClient,
-		volumeTopology: scheduler.NewVolumeTopology(kubeClient),
-		cluster:        cluster,
-		recorder:       recorder,
-		cm:             pretty.NewChangeMonitor(),
-		clock:          clock,
+		batcher:                    NewBatcher[types.UID](clock),
+		cloudProvider:              cloudProvider,
+		kubeClient:                 kubeClient,
+		volumeTopology:             scheduler.NewVolumeTopology(kubeClient),
+		cluster:                    cluster,
+		recorder:                   recorder,
+		cm:                         pretty.NewChangeMonitor(),
+		clock:                      clock,
+		deviceAllocationController: deviceAllocationController,
+		virtualPodCache:            virtualPodCache,
 	}
 	return p
 }
@@ -104,40 +117,61 @@ func (p *Provisioner) Trigger(uid types.UID) {
 	p.batcher.Trigger(uid)
 }
 
+// TriggerReconcile wakes the provisioner without associating the trigger with a
+// specific object.
+func (p *Provisioner) TriggerReconcile() {
+	p.batcher.TriggerNow()
+}
+
+func (p *Provisioner) Name() string {
+	return "provisioner"
+}
+
 func (p *Provisioner) Register(_ context.Context, m manager.Manager) error {
 	return controllerruntime.NewControllerManagedBy(m).
-		Named("provisioner").
+		Named(p.Name()).
 		WatchesRawSource(singleton.Source()).
 		Complete(singleton.AsReconciler(p))
 }
 
-func (p *Provisioner) Reconcile(ctx context.Context) (result reconcile.Result, err error) {
-	ctx = injection.WithControllerName(ctx, "provisioner")
+func (p *Provisioner) Reconcile(ctx context.Context) (result reconciler.Result, err error) {
+	ctx = injection.WithControllerName(ctx, p.Name())
 
 	// Batch pods
 	if triggered := p.batcher.Wait(ctx); !triggered {
-		return reconcile.Result{RequeueAfter: singleton.RequeueImmediately}, nil
+		return reconciler.Result{RequeueAfter: singleton.RequeueImmediately}, nil
 	}
 	// We need to ensure that our internal cluster state mechanism is synced before we proceed
 	// with making any scheduling decision off of our state nodes. Otherwise, we have the potential to make
 	// a scheduling decision based on a smaller subset of nodes in our cluster state than actually exist.
 	if !p.cluster.Synced(ctx) {
-		log.FromContext(ctx).V(1).Info("waiting on cluster sync")
-		return reconcile.Result{RequeueAfter: singleton.RequeueImmediately}, nil
+		return reconciler.Result{RequeueAfter: singleton.RequeueImmediately}, nil
 	}
 
 	// Schedule pods to potential nodes, exit if nothing to do
 	results, err := p.Schedule(ctx)
 	if err != nil {
-		return reconcile.Result{}, err
+		return reconciler.Result{}, err
+	}
+	// Update CapacityBuffer state. Two things happen here:
+	// 1. Patch the Provisioning condition on each buffer (FitsExistingCapacity vs RequiresNewCapacity).
+	// 2. Update cluster.bufferPodCounts so the emptiness disruption path knows
+	//    which nodes host buffer capacity and should not be deleted as "empty".
+	//    Consolidation does NOT use this — it naturally accounts for buffer pods
+	//    because GetPendingPods injects them into the simulation's pending set.
+	if options.FromContext(ctx).FeatureGates.CapacityBuffer {
+		if err := p.updateBufferProvisioningStatus(ctx, results); err != nil {
+			log.FromContext(ctx).Error(err, "updating CapacityBuffer provisioning status")
+		}
+		p.cluster.UpdateBufferPodCounts(bufferPodCountsFromResults(results))
 	}
 	if len(results.NewNodeClaims) == 0 {
-		return reconcile.Result{RequeueAfter: singleton.RequeueImmediately}, nil
+		return reconciler.Result{RequeueAfter: singleton.RequeueImmediately}, nil
 	}
 	if _, err = p.CreateNodeClaims(ctx, results.NewNodeClaims, WithReason(metrics.ProvisionedReason), RecordPodNomination); err != nil {
-		return reconcile.Result{}, err
+		return reconciler.Result{}, err
 	}
-	return reconcile.Result{RequeueAfter: singleton.RequeueImmediately}, nil
+	return reconciler.Result{RequeueAfter: singleton.RequeueImmediately}, nil
 }
 
 // CreateNodeClaims launches nodes passed into the function in parallel. It returns a slice of the successfully created node
@@ -153,6 +187,14 @@ func (p *Provisioner) CreateNodeClaims(ctx context.Context, nodeClaims []*schedu
 		} else {
 			nodeClaimNames[i] = name
 		}
+
+		// Regardless of if we successfully created the NodeClaim or not, we should release the reservation. If the NodeClaim
+		// was successfully created, we've updated the active node count in Create already. If we failed, we should release
+		// the reservation and allow the provisioner to create new NodeClaims in a subsequent attempt.
+		// NOTE: Only applies to static NodePools since node limits are not supported for dynamic NodePools
+		if nodeClaims[i].IsStaticNodeClaim {
+			p.cluster.NodePoolState.ReleaseNodeCount(nodeClaims[i].NodePoolName, 1)
+		}
 	})
 	return nodeClaimNames, multierr.Combine(errs...)
 }
@@ -167,14 +209,24 @@ func (p *Provisioner) GetPendingPods(ctx context.Context) ([]*corev1.Pod, error)
 	rejectedPods, pods := lo.FilterReject(pods, func(po *corev1.Pod, _ int) bool {
 		if err := p.Validate(ctx, po); err != nil {
 			// Mark in memory that this pod is unschedulable
-			p.cluster.MarkPodSchedulingDecisions(map[*corev1.Pod]error{po: fmt.Errorf("ignoring pod, %w", err)}, po)
-			log.FromContext(ctx).WithValues("Pod", klog.KObj(po)).V(1).Info(fmt.Sprintf("ignoring pod, %s", err))
+			p.cluster.MarkPodSchedulingDecisions(ctx, map[*corev1.Pod]error{po: fmt.Errorf("ignoring pod, %w", err)}, nil, nil)
+			log.FromContext(ctx).WithValues("Pod", klog.KObj(po)).V(1).Info("ignoring pod", "error", err)
+			// Don't create pod events for pods that are specifically avoiding scheduling to Karpenter-managed capacity
+			if !errors.Is(err, KarpenterManagedLabelDoesNotExistError) {
+				p.recorder.Publish(scheduler.PodFailedToScheduleEvent(po, err))
+			}
 			return true
 		}
 		return false
 	})
 	scheduler.IgnoredPodCount.Set(float64(len(rejectedPods)), nil)
 	p.consolidationWarnings(ctx, pods)
+	// Inject CapacityBuffer virtual pods AFTER the Validate filter so we don't
+	// run PVC topology checks on synthetic pods or pollute cluster state with
+	// their "decisions". Gated by the feature flag.
+	if options.FromContext(ctx).FeatureGates.CapacityBuffer {
+		pods = append(pods, p.virtualPodCache.GetAll(ctx)...)
+	}
 	return pods, nil
 }
 
@@ -220,6 +272,7 @@ func (p *Provisioner) NewScheduler(
 	ctx context.Context,
 	pods []*corev1.Pod,
 	stateNodes []*state.StateNode,
+	deletingPodUIDs sets.Set[types.UID],
 	opts ...scheduler.Options,
 ) (*scheduler.Scheduler, error) {
 	nodePools, err := nodepoolutils.ListManaged(ctx, p.kubeClient, p.cloudProvider)
@@ -227,6 +280,9 @@ func (p *Provisioner) NewScheduler(
 		return nil, fmt.Errorf("listing nodepools, %w", err)
 	}
 	nodePools = lo.Filter(nodePools, func(np *v1.NodePool, _ int) bool {
+		if nodepoolutils.IsStatic(np) {
+			return false
+		}
 		if !np.StatusConditions().IsTrue(status.ConditionReady) {
 			log.FromContext(ctx).WithValues("NodePool", klog.KObj(np)).Error(err, "ignoring nodepool, not ready")
 			return false
@@ -246,6 +302,10 @@ func (p *Provisioner) NewScheduler(
 	for _, np := range nodePools {
 		its, err := p.cloudProvider.GetInstanceTypes(ctx, np)
 		if err != nil {
+			if cloudprovider.IsUnevaluatedNodePoolError(err) {
+				log.FromContext(ctx).WithValues("NodePool", klog.KObj(np)).V(1).Info("skipping, awaiting nodeoverlay evaluation")
+				continue
+			}
 			if errors.Is(err, context.DeadlineExceeded) {
 				return nil, fmt.Errorf("getting instance types, %w", err)
 			}
@@ -259,11 +319,21 @@ func (p *Provisioner) NewScheduler(
 		instanceTypes[np.Name] = its
 	}
 
-	// inject topology constraints
-	pods, err = p.injectVolumeTopologyRequirements(ctx, pods)
+	// Get volume topology requirements WITHOUT modifying pods.
+	// Volume requirements are passed separately and added to nodeRequirements only.
+	// Pods that fail volume topology lookup are excluded from scheduling.
+	pods, volumeReqs, err := p.getVolumeTopologyRequirements(ctx, pods)
 	if err != nil {
-		return nil, fmt.Errorf("injecting volume topology requirements, %w", err)
+		return nil, fmt.Errorf("getting volume topology requirements, %w", err)
 	}
+
+	// Inject cluster-level default topology spread constraints (from --scheduler-config) into the scheduling-time pod
+	// copies for any pod that declares none of its own, mirroring kube-scheduler's PodTopologySpread plugin. This is
+	// done here, once at ingestion (before the first topology.Update), so all downstream machinery - TopologyGroup
+	// synthesis, ScheduleAnyway relaxation, and consolidation - flows through the existing per-pod path with no new
+	// logic. The injected constraints exist only on these scheduling-time copies and are never written back to the API
+	// server.
+	scheduler.NewDefaultTopologySpreadInjector(p.kubeClient).Inject(ctx, pods)
 
 	// Calculate cluster topology, if a context error occurs, it is wrapped and returned
 	topology, err := scheduler.NewTopology(ctx, p.kubeClient, p.cluster, stateNodes, nodePools, instanceTypes, pods, opts...)
@@ -274,7 +344,25 @@ func (p *Provisioner) NewScheduler(
 	if err != nil {
 		return nil, fmt.Errorf("getting daemon pods, %w", err)
 	}
-	return scheduler.NewScheduler(ctx, p.kubeClient, nodePools, p.cluster, stateNodes, topology, instanceTypes, daemonSetPods, p.recorder, p.clock, opts...), nil
+
+	// Build the DRA device allocator for this scheduling loop. Slice/device gathering happens here (rather than in the
+	// scheduler) so the same filtering can be reused by other schedulers, e.g. disruption. When DRA support is disabled,
+	// the allocator is left nil and the scheduler short-circuits DRA pods.
+	var allocator *dynamicresources.Allocator
+	if !options.FromContext(ctx).IgnoreDRARequests {
+		inClusterSlices, err := p.gatherResourceSlices(ctx, stateNodes)
+		if err != nil {
+			return nil, fmt.Errorf("gathering resourceslices, %w", err)
+		}
+		allocatedDevices, err := p.gatherAllocatedDevices(ctx, deletingPodUIDs)
+		if err != nil {
+			return nil, fmt.Errorf("gathering allocated devices, %w", err)
+		}
+		allocator = dynamicresources.NewAllocator(inClusterSlices, allocatedDevices, dynamicresources.BuildAttributeBindings(instanceTypes), p.kubeClient, deletingPodUIDs)
+	}
+
+	// Pass volumeReqs to scheduler - added to nodeRequirements for NodeClaim zone selection
+	return scheduler.NewScheduler(ctx, p.kubeClient, nodePools, p.cluster, stateNodes, topology, instanceTypes, daemonSetPods, p.recorder, p.clock, volumeReqs, allocator, opts...), nil
 }
 
 func (p *Provisioner) Schedule(ctx context.Context) (scheduler.Results, error) {
@@ -290,7 +378,7 @@ func (p *Provisioner) Schedule(ctx context.Context) (scheduler.Results, error) {
 	// We don't consider the nodes that are MarkedForDeletion since this capacity shouldn't be considered
 	// as persistent capacity for the cluster (since it will soon be removed). Additionally, we are scheduling for
 	// the pods that are on these nodes so the MarkedForDeletion node capacity can't be considered.
-	nodes := p.cluster.Nodes()
+	nodes := p.cluster.DeepCopyNodes()
 
 	// Get pods, exit if nothing to do
 	pendingPods, err := p.GetPendingPods(ctx)
@@ -302,7 +390,7 @@ func (p *Provisioner) Schedule(ctx context.Context) (scheduler.Results, error) {
 	// We do this after getting the pending pods so that we undershoot if pods are
 	// actively migrating from a node that is being deleted
 	// NOTE: The assumption is that these nodes are cordoned and no additional pods will schedule to them
-	deletingNodePods, err := nodes.Deleting().CurrentlyReschedulablePods(ctx, p.kubeClient)
+	deletingNodePods, err := nodes.Deleting().CurrentlyReschedulablePods(ctx, p.kubeClient, p.clock, p.recorder)
 	if err != nil {
 		return scheduler.Results{}, err
 	}
@@ -312,9 +400,14 @@ func (p *Provisioner) Schedule(ctx context.Context) (scheduler.Results, error) {
 	if len(pods) == 0 {
 		return scheduler.Results{}, nil
 	}
+	deletingPodUIDs := sets.New(lo.Map(deletingNodePods, func(p *corev1.Pod, _ int) types.UID { return p.UID })...)
 	log.FromContext(ctx).V(1).WithValues("pending-pods", len(pendingPods), "deleting-pods", len(deletingNodePods)).Info("computing scheduling decision for provisionable pod(s)")
 
-	opts := []scheduler.Options{scheduler.DisableReservedCapacityFallback}
+	opts := []scheduler.Options{
+		scheduler.DisableReservedCapacityFallback,
+		scheduler.NumConcurrentReconciles(int(math.Ceil(float64(options.FromContext(ctx).CPURequests) / 1000.0))),
+		scheduler.MinValuesPolicy(options.FromContext(ctx).MinValuesPolicy),
+	}
 	if options.FromContext(ctx).PreferencePolicy == options.PreferencePolicyIgnore {
 		opts = append(opts, scheduler.IgnorePreferences)
 	}
@@ -322,15 +415,15 @@ func (p *Provisioner) Schedule(ctx context.Context) (scheduler.Results, error) {
 		ctx,
 		pods,
 		nodes.Active(),
+		deletingPodUIDs,
 		opts...,
 	)
 	if err != nil {
 		if errors.Is(err, ErrNodePoolsNotFound) {
-			log.FromContext(ctx).Info("no nodepools found")
-			// Mark in memory that these pods are unschedulable
-			p.cluster.MarkPodSchedulingDecisions(lo.SliceToMap(pods, func(p *corev1.Pod) (*corev1.Pod, error) {
-				return p, fmt.Errorf("no nodepools found")
-			}), pods...)
+			log.FromContext(ctx).Info("no dynamic nodepools found")
+			p.cluster.MarkPodSchedulingDecisions(ctx, lo.SliceToMap(pods, func(p *corev1.Pod) (*corev1.Pod, error) {
+				return p, fmt.Errorf("no dynamic nodepools found")
+			}), nil, nil)
 			return scheduler.Results{}, nil
 		}
 		return scheduler.Results{}, fmt.Errorf("creating scheduler, %w", err)
@@ -345,7 +438,7 @@ func (p *Provisioner) Schedule(ctx context.Context) (scheduler.Results, error) {
 	if err != nil && !errors.Is(err, context.DeadlineExceeded) {
 		return scheduler.Results{}, err
 	}
-	results = results.TruncateInstanceTypes(scheduler.MaxInstanceTypes)
+	results = results.TruncateInstanceTypes(ctx, scheduler.MaxInstanceTypes)
 	reservedOfferingErrors := results.ReservedOfferingErrors()
 	if len(reservedOfferingErrors) != 0 {
 		log.FromContext(ctx).V(1).WithValues(
@@ -369,24 +462,17 @@ func (p *Provisioner) Schedule(ctx context.Context) (scheduler.Results, error) {
 			"duration", time.Since(start),
 		).Info("found provisionable pod(s)")
 	}
-	// Mark in memory when these pods were marked as schedulable or when we made a decision on the pods
-	p.cluster.MarkPodSchedulingDecisions(results.PodErrors, pendingPods...)
-	p.MarkPodSchedulingDecisionsNodeRegistrationHealthy(ctx, results)
+	// Mark in memory when these pods were marked as schedulable or when we made a decision on the pods.
+	// Virtual buffer pods are excluded — they never exist in etcd, so their entries would never be
+	// cleaned up and would leak memory when buffers are deleted or scaled down.
+	p.cluster.MarkPodSchedulingDecisions(ctx,
+		filterVirtualPodErrors(results.PodErrors),
+		filterVirtualPodMapping(results.NodePoolToPodMapping()),
+		// Only passing existing nodes here and not new nodeClaims because
+		// these nodeClaims don't have a name until they are created
+		filterVirtualPodMapping(results.ExistingNodeToPodMapping()))
 	results.Record(ctx, p.recorder, p.cluster)
 	return results, nil
-}
-
-// MarkPodSchedulingDecisionsNodeRegistrationHealthy iterates through the nodeClaims
-// and existing nodes and marks podHealthyNodePoolScheduledTime time for pods
-func (p *Provisioner) MarkPodSchedulingDecisionsNodeRegistrationHealthy(ctx context.Context, results scheduler.Results) {
-	for _, n := range results.NewNodeClaims {
-		p.cluster.UpdatePodHealthyNodePoolScheduledTime(ctx, n.Labels[v1.NodePoolLabelKey], n.Pods...)
-	}
-	for _, n := range results.ExistingNodes {
-		if nodePoolName, ok := n.Labels()[v1.NodePoolLabelKey]; ok {
-			p.cluster.UpdatePodHealthyNodePoolScheduledTime(ctx, nodePoolName, n.Pods...)
-		}
-	}
 }
 
 func (p *Provisioner) Create(ctx context.Context, n *scheduler.NodeClaim, opts ...option.Function[LaunchOptions]) (string, error) {
@@ -404,17 +490,32 @@ func (p *Provisioner) Create(ctx context.Context, n *scheduler.NodeClaim, opts .
 	if err := p.kubeClient.Create(ctx, nodeClaim); err != nil {
 		return "", err
 	}
+
+	// Update pod to nodeClaim mapping for newly created nodeClaims. We do
+	// this here because nodeClaim does not have a name until it is created.
+	p.cluster.UpdatePodToNodeClaimMapping(map[string][]*corev1.Pod{nodeClaim.Name: n.Pods})
+
 	instanceTypeRequirement, _ := lo.Find(nodeClaim.Spec.Requirements, func(req v1.NodeSelectorRequirementWithMinValues) bool {
 		return req.Key == corev1.LabelInstanceTypeStable
 	})
 
 	log.FromContext(ctx).WithValues("NodeClaim", klog.KObj(nodeClaim), "requests", nodeClaim.Spec.Resources.Requests, "instance-types", instanceTypeList(instanceTypeRequirement.Values)).
 		Info("created nodeclaim")
-	metrics.NodeClaimsCreatedTotal.Inc(map[string]string{
-		metrics.ReasonLabel:       options.Reason,
-		metrics.NodePoolLabel:     nodeClaim.Labels[v1.NodePoolLabelKey],
-		metrics.CapacityTypeLabel: nodeClaim.Labels[v1.CapacityTypeLabelKey],
-	})
+
+	if val, ok := nodeClaim.Annotations[v1.NodeClaimMinValuesRelaxedAnnotationKey]; ok {
+		metrics.NodeClaimsCreatedTotal.Inc(map[string]string{
+			metrics.ReasonLabel:           options.Reason,
+			metrics.NodePoolLabel:         nodeClaim.Labels[v1.NodePoolLabelKey],
+			metrics.MinValuesRelaxedLabel: val,
+		})
+	} else {
+		// If annotation is missing for any reason, assume that min values wasn't relaxed.
+		metrics.NodeClaimsCreatedTotal.Inc(map[string]string{
+			metrics.ReasonLabel:           options.Reason,
+			metrics.NodePoolLabel:         nodeClaim.Labels[v1.NodePoolLabelKey],
+			metrics.MinValuesRelaxedLabel: "false",
+		})
+	}
 	// Update the nodeclaim manually in state to avoid eventual consistency delay races with our watcher.
 	// This is essential to avoiding races where disruption can create a replacement node, then immediately
 	// requeue. This can race with controller-runtime's internal cache as it watches events on the cluster
@@ -453,7 +554,7 @@ func (p *Provisioner) getDaemonSetPods(ctx context.Context) ([]*corev1.Pod, erro
 	return lo.Map(daemonSetList.Items, func(d appsv1.DaemonSet, _ int) *corev1.Pod {
 		pod := p.cluster.GetDaemonSetPod(&d)
 		if pod == nil {
-			pod = &corev1.Pod{Spec: d.Spec.Template.Spec}
+			pod = daemonset.PodForDaemonSet(&d)
 		}
 		// Replacing retrieved pod affinity with daemonset pod template required node affinity since this is overridden
 		// by the daemonset controller during pod creation
@@ -474,40 +575,49 @@ func (p *Provisioner) getDaemonSetPods(ctx context.Context) ([]*corev1.Pod, erro
 func (p *Provisioner) Validate(ctx context.Context, pod *corev1.Pod) error {
 	return multierr.Combine(
 		validateKarpenterManagedLabelCanExist(pod),
-		validateNodeSelector(pod),
-		validateAffinity(pod),
+		validateNodeSelector(ctx, pod),
+		validateAffinity(ctx, pod),
 		p.volumeTopology.ValidatePersistentVolumeClaims(ctx, pod),
 	)
 }
+
+var KarpenterManagedLabelDoesNotExistError = serrors.Wrap(fmt.Errorf("configured to not run on a Karpenter provisioned node"), "requirement", fmt.Sprintf("%s %s", v1.NodePoolLabelKey, corev1.NodeSelectorOpDoesNotExist))
 
 // validateKarpenterManagedLabelCanExist provides a more clear error message in the event of scheduling a pod that specifically doesn't
 // want to run on a Karpenter node (e.g. a Karpenter controller replica).
 func validateKarpenterManagedLabelCanExist(p *corev1.Pod) error {
 	for _, req := range scheduling.NewPodRequirements(p) {
 		if req.Key == v1.NodePoolLabelKey && req.Operator() == corev1.NodeSelectorOpDoesNotExist {
-			return fmt.Errorf("configured to not run on a Karpenter provisioned node via the %s %s requirement",
-				v1.NodePoolLabelKey, corev1.NodeSelectorOpDoesNotExist)
+			return KarpenterManagedLabelDoesNotExistError
 		}
 	}
 	return nil
 }
 
-func (p *Provisioner) injectVolumeTopologyRequirements(ctx context.Context, pods []*corev1.Pod) ([]*corev1.Pod, error) {
+// getVolumeTopologyRequirements collects volume topology requirements for each pod
+// WITHOUT modifying the pods. These requirements will be added to nodeRequirements
+// (for NodeClaim zone selection) but NOT to pod affinities (for correct TSC counting).
+func (p *Provisioner) getVolumeTopologyRequirements(ctx context.Context, pods []*corev1.Pod) ([]*corev1.Pod, map[types.UID][]scheduling.Requirements, error) {
 	var schedulablePods []*corev1.Pod
+	volumeReqs := make(map[types.UID][]scheduling.Requirements)
 	for _, pod := range pods {
-		if err := p.volumeTopology.Inject(ctx, pod); err != nil {
+		reqs, err := p.volumeTopology.GetRequirements(ctx, pod)
+		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
-				return nil, err
+				return nil, nil, err
 			}
 			log.FromContext(ctx).WithValues("Pod", klog.KObj(pod)).Error(err, "failed getting volume topology requirements")
-		} else {
-			schedulablePods = append(schedulablePods, pod)
+			continue
 		}
+		if len(reqs) > 0 {
+			volumeReqs[pod.UID] = reqs
+		}
+		schedulablePods = append(schedulablePods, pod)
 	}
-	return schedulablePods, nil
+	return schedulablePods, volumeReqs, nil
 }
 
-func validateNodeSelector(p *corev1.Pod) (errs error) {
+func validateNodeSelector(ctx context.Context, p *corev1.Pod) (errs error) {
 	terms := lo.MapToSlice(p.Spec.NodeSelector, func(k string, v string) corev1.NodeSelectorTerm {
 		return corev1.NodeSelectorTerm{
 			MatchExpressions: []corev1.NodeSelectorRequirement{
@@ -520,37 +630,37 @@ func validateNodeSelector(p *corev1.Pod) (errs error) {
 		}
 	})
 	for _, term := range terms {
-		errs = multierr.Append(errs, validateNodeSelectorTerm(term))
+		errs = multierr.Append(errs, validateNodeSelectorTerm(ctx, term))
 	}
 	return errs
 }
 
-func validateAffinity(p *corev1.Pod) (errs error) {
+func validateAffinity(ctx context.Context, p *corev1.Pod) (errs error) {
 	if p.Spec.Affinity == nil {
 		return nil
 	}
 	if p.Spec.Affinity.NodeAffinity != nil {
-		for _, term := range p.Spec.Affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution {
-			errs = multierr.Append(errs, validateNodeSelectorTerm(term.Preference))
-		}
 		if p.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution != nil {
 			for _, term := range p.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms {
-				errs = multierr.Append(errs, validateNodeSelectorTerm(term))
+				errs = multierr.Append(errs, validateNodeSelectorTerm(ctx, term))
 			}
 		}
 	}
 	return errs
 }
 
-func validateNodeSelectorTerm(term corev1.NodeSelectorTerm) (errs error) {
+func validateNodeSelectorTerm(ctx context.Context, term corev1.NodeSelectorTerm) (errs error) {
 	if term.MatchFields != nil {
 		errs = multierr.Append(errs, fmt.Errorf("node selector term with matchFields is not supported"))
 	}
 	if term.MatchExpressions != nil {
 		for _, requirement := range term.MatchExpressions {
-			errs = multierr.Append(errs, v1.ValidateRequirement(v1.NodeSelectorRequirementWithMinValues{
-				NodeSelectorRequirement: requirement,
-			}))
+			errs = multierr.Append(errs, v1.ValidateRequirement(ctx,
+				v1.NodeSelectorRequirementWithMinValues{
+					Key:      requirement.Key,
+					Operator: requirement.Operator,
+					Values:   requirement.Values,
+				}))
 		}
 	}
 	return errs

@@ -25,6 +25,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -43,9 +44,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
+	kwokcloudprovider "sigs.k8s.io/karpenter/kwok/cloudprovider"
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/operator"
-	. "sigs.k8s.io/karpenter/pkg/utils/testing" //nolint:stylecheck,staticcheck
+	"sigs.k8s.io/karpenter/pkg/test"
+	. "sigs.k8s.io/karpenter/pkg/utils/testing" //nolint:staticcheck
 	"sigs.k8s.io/karpenter/test/pkg/debug"
 )
 
@@ -62,6 +65,8 @@ var (
 	defaultNodePool []byte
 	nodeClassPath   = flag.String("default-nodeclass", "", "Pass in a default cloud specific node class")
 	nodePoolPath    = flag.String("default-nodepool", "", "Pass in a default karpenter nodepool")
+	repairCondition = flag.String("repair-condition", "", "Pass in a <type>=<status>[/<reason>] node condition that matches a cloud provider RepairPolicy, for repair specs to inject")
+	rebootCondition = flag.String("reboot-condition", "", "Pass in a <type>=<status>[/<reason>] node condition that a cloud provider RepairPolicy remediates with a reboot, for reboot specs to inject")
 )
 
 type Environment struct {
@@ -91,8 +96,8 @@ func NewEnvironment(t *testing.T) *Environment {
 	// Get the output dir if it's set
 	outputDir, _ := os.LookupEnv("OUTPUT_DIR")
 
-	gomega.SetDefaultEventuallyTimeout(10 * time.Minute)
-	gomega.SetDefaultEventuallyPollingInterval(1 * time.Second)
+	gomega.SetDefaultEventuallyTimeout(15 * time.Minute)
+	gomega.SetDefaultEventuallyPollingInterval(2 * time.Second)
 	return &Environment{
 		Context:               ctx,
 		cancel:                cancel,
@@ -132,12 +137,12 @@ func NewClient(ctx context.Context, config *rest.Config) client.Client {
 		node := o.(*corev1.Node)
 		return []string{strconv.FormatBool(node.Spec.Unschedulable)}
 	}))
-	lo.Must0(cache.IndexField(ctx, &corev1.Node{}, "spec.taints[*].karpenter.sh/disruption", func(o client.Object) []string {
+	lo.Must0(cache.IndexField(ctx, &corev1.Node{}, "spec.taints[*].karpenter.sh/disrupted", func(o client.Object) []string {
 		node := o.(*corev1.Node)
-		t, _ := lo.Find(node.Spec.Taints, func(t corev1.Taint) bool {
+		_, found := lo.Find(node.Spec.Taints, func(t corev1.Taint) bool {
 			return t.Key == v1.DisruptedTaintKey
 		})
-		return []string{t.Value}
+		return []string{lo.Ternary(found, "true", "false")}
 	}))
 	lo.Must0(cache.IndexField(ctx, &v1.NodeClaim{}, "status.conditions[*].type", func(o client.Object) []string {
 		nodeClaim := o.(*v1.NodeClaim)
@@ -157,7 +162,7 @@ func NewClient(ctx context.Context, config *rest.Config) client.Client {
 	return c
 }
 
-func (env *Environment) DefaultNodePool(nodeClass client.Object) *v1.NodePool {
+func (env *Environment) DefaultNodePool(nodeClass *unstructured.Unstructured) *v1.NodePool {
 	nodePool := &v1.NodePool{}
 	if lo.FromPtr(nodePoolPath) == "" {
 		nodePool = object.Unmarshal[v1.NodePool](defaultNodePool)
@@ -168,12 +173,56 @@ func (env *Environment) DefaultNodePool(nodeClass client.Object) *v1.NodePool {
 
 	// Update to use the provided default nodeclass
 	nodePool.Spec.Template.Spec.NodeClassRef = &v1.NodeClassReference{
-		Kind:  env.DefaultNodeClass.GetObjectKind().GroupVersionKind().Kind,
-		Group: env.DefaultNodeClass.GetObjectKind().GroupVersionKind().Group,
-		Name:  env.DefaultNodeClass.GetName(),
+		Kind:  nodeClass.GetObjectKind().GroupVersionKind().Kind,
+		Group: nodeClass.GetObjectKind().GroupVersionKind().Group,
+		Name:  nodeClass.GetName(),
 	}
-
+	nodePool.Labels = lo.Assign(nodePool.Labels, map[string]string{test.DiscoveryLabel: "unspecified"})
+	nodePool.Spec.Template.Labels = lo.Assign(nodePool.Spec.Template.Labels, map[string]string{test.DiscoveryLabel: "unspecified"})
+	nodePool.Name = fmt.Sprintf("%s-%s", nodePool.GetName(), test.RandomName())
 	return nodePool
+}
+
+func (env *Environment) IsDefaultNodeClassKWOK() bool {
+	return env.DefaultNodeClass.GetObjectKind().GroupVersionKind().Kind == "KWOKNodeClass"
+}
+
+// RepairCondition returns the node condition repair specs inject to make a node repair-eligible: --repair-condition if
+// set, otherwise KWOK's simulated condition. It must match a RepairPolicy and be one nothing on the node resets, so the
+// fault holds while the node stays Ready. ok is false when the provider has none configured.
+func (env *Environment) RepairCondition() (corev1.NodeCondition, bool) {
+	if value := lo.FromPtr(repairCondition); value != "" {
+		return parseCondition("repair-condition", value), true
+	}
+	if env.IsDefaultNodeClassKWOK() {
+		return corev1.NodeCondition{Type: kwokcloudprovider.KWOKUnhealthyCondition, Status: corev1.ConditionTrue}, true
+	}
+	return corev1.NodeCondition{}, false
+}
+
+// RebootCondition returns the node condition reboot specs inject to make repair reboot a node: --reboot-condition if
+// set, otherwise KWOK's simulated condition. A provider's policies must reboot it once it's about 11 minutes old (see
+// ExpectRebootFaultInjected) with no replace policy on the same condition eligible yet, and nothing on the node may
+// reset it. ok is false when the provider has none configured.
+func (env *Environment) RebootCondition() (corev1.NodeCondition, bool) {
+	if value := lo.FromPtr(rebootCondition); value != "" {
+		return parseCondition("reboot-condition", value), true
+	}
+	if env.IsDefaultNodeClassKWOK() {
+		return corev1.NodeCondition{Type: kwokcloudprovider.KWOKRebootRequiredCondition, Status: corev1.ConditionTrue}, true
+	}
+	return corev1.NodeCondition{}, false
+}
+
+// parseCondition parses a <type>=<status>[/<reason>] node condition flag value. The reason is optional; it's needed
+// when a provider's RepairPolicy only matches certain reasons.
+func parseCondition(flagName, value string) corev1.NodeCondition {
+	t, rest, found := strings.Cut(value, "=")
+	s, reason, _ := strings.Cut(rest, "/")
+	if !found || t == "" || s == "" {
+		panic(fmt.Sprintf("--%s must be <type>=<status>[/<reason>], got %q", flagName, value))
+	}
+	return corev1.NodeCondition{Type: corev1.NodeConditionType(t), Status: corev1.ConditionStatus(s), Reason: reason}
 }
 
 func decodeNodeClass() *unstructured.Unstructured {

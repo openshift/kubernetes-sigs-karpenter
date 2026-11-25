@@ -17,33 +17,89 @@ limitations under the License.
 package lifecycle_test
 
 import (
+	"context"
+	"fmt"
+	"sync/atomic"
 	"time"
 
+	"github.com/awslabs/operatorpkg/object"
 	"github.com/awslabs/operatorpkg/status"
 	operatorpkg "github.com/awslabs/operatorpkg/test/expectations"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/record"
 
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
+	"sigs.k8s.io/karpenter/pkg/cloudprovider"
+	nodeclaimlifecycle "sigs.k8s.io/karpenter/pkg/controllers/nodeclaim/lifecycle"
 	"sigs.k8s.io/karpenter/pkg/events"
+	"sigs.k8s.io/karpenter/pkg/state/nodepoolhealth"
 	"sigs.k8s.io/karpenter/pkg/test"
 	. "sigs.k8s.io/karpenter/pkg/test/expectations"
 )
 
+type testHook struct {
+	name string
+	fn   func(context.Context, *v1.NodeClaim) (cloudprovider.NodeLifecycleHookResult, error)
+}
+
+func (h testHook) Name() string { return h.name }
+func (h testHook) Registered(ctx context.Context, nc *v1.NodeClaim) (cloudprovider.NodeLifecycleHookResult, error) {
+	return h.fn(ctx, nc)
+}
+
 var _ = Describe("Registration", func() {
 	var nodePool *v1.NodePool
+	var taints []corev1.Taint
+	var startupTaints []corev1.Taint
 	BeforeEach(func() {
 		nodePool = test.NodePool()
+		taints = []corev1.Taint{
+			{
+				Key:    "custom-taint",
+				Effect: corev1.TaintEffectNoSchedule,
+				Value:  "custom-value",
+			},
+			{
+				Key:    "other-custom-taint",
+				Effect: corev1.TaintEffectNoExecute,
+				Value:  "other-custom-value",
+			},
+		}
+		startupTaints = []corev1.Taint{
+			{
+				Key:    "custom-startup-taint",
+				Effect: corev1.TaintEffectNoSchedule,
+				Value:  "custom-startup-value",
+			},
+			{
+				Key:    "other-custom-startup-taint",
+				Effect: corev1.TaintEffectNoExecute,
+				Value:  "other-custom-startup-value",
+			},
+		}
+
 	})
 	DescribeTable(
 		"Registration",
 		func(isManagedNodeClaim bool) {
+			ExpectApplied(ctx, env.Client, nodePool)
 			nodeClaimOpts := []v1.NodeClaim{{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
 						v1.NodePoolLabelKey: nodePool.Name,
+					},
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion:         object.GVK(nodePool).GroupVersion().String(),
+							Kind:               object.GVK(nodePool).Kind,
+							Name:               nodePool.Name,
+							UID:                nodePool.UID,
+							BlockOwnerDeletion: new(true),
+						},
 					},
 				},
 			}}
@@ -101,6 +157,42 @@ var _ = Describe("Registration", func() {
 
 		node = ExpectExists(ctx, env.Client, node)
 		ExpectOwnerReferenceExists(node, nodeClaim)
+	})
+	It("should not add the owner reference to the Node when the Node already has the owner reference", func() {
+		nodeClaim := test.NodeClaim(v1.NodeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: map[string]string{
+					v1.NodePoolLabelKey: nodePool.Name,
+				},
+			},
+		})
+		ExpectApplied(ctx, env.Client, nodePool, nodeClaim)
+		ExpectObjectReconciled(ctx, env.Client, nodeClaimController, nodeClaim)
+		nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+
+		node := test.Node(test.NodeOptions{
+			ObjectMeta: metav1.ObjectMeta{
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion:         object.GVK(nodeClaim).GroupVersion().String(),
+						Kind:               object.GVK(nodeClaim).Kind,
+						Name:               nodeClaim.Name,
+						UID:                nodeClaim.UID,
+						BlockOwnerDeletion: new(true),
+					},
+				},
+			},
+			ProviderID: nodeClaim.Status.ProviderID,
+			Taints:     []corev1.Taint{v1.UnregisteredNoExecuteTaint},
+		})
+		ExpectApplied(ctx, env.Client, node)
+		ExpectObjectReconciled(ctx, env.Client, nodeClaimController, nodeClaim)
+
+		node = ExpectExists(ctx, env.Client, node)
+		ExpectOwnerReferenceExists(node, nodeClaim)
+		Expect(lo.CountBy(node.OwnerReferences, func(o metav1.OwnerReference) bool {
+			return o.APIVersion == object.GVK(nodeClaim).GroupVersion().String() && o.Kind == object.GVK(nodeClaim).Kind && o.UID == nodeClaim.UID
+		})).To(Equal(1))
 	})
 	It("should sync the karpenter.sh/registered label to the Node and remove the karpenter.sh/unregistered taint when the Node comes online", func() {
 		nodeClaim := test.NodeClaim(v1.NodeClaim{
@@ -204,63 +296,85 @@ var _ = Describe("Registration", func() {
 			Expect(node.Annotations).To(HaveKeyWithValue(k, v))
 		}
 	})
-	It("should sync the taints to the Node when the Node comes online", func() {
+	It("should sync the taints to the Node when the Node comes online, if node label do not sync taints is not present", func() {
 		nodeClaim := test.NodeClaim(v1.NodeClaim{
 			ObjectMeta: metav1.ObjectMeta{
 				Labels: map[string]string{
 					v1.NodePoolLabelKey: nodePool.Name,
 				},
 			},
-			Spec: v1.NodeClaimSpec{
-				Taints: []corev1.Taint{
-					{
-						Key:    "custom-taint",
-						Effect: corev1.TaintEffectNoSchedule,
-						Value:  "custom-value",
-					},
-					{
-						Key:    "other-custom-taint",
-						Effect: corev1.TaintEffectNoExecute,
-						Value:  "other-custom-value",
-					},
-				},
-			},
+			Spec: v1.NodeClaimSpec{Taints: taints},
 		})
 		ExpectApplied(ctx, env.Client, nodePool, nodeClaim)
 		ExpectObjectReconciled(ctx, env.Client, nodeClaimController, nodeClaim)
 		nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
-		Expect(nodeClaim.Spec.Taints).To(ContainElements(
-			corev1.Taint{
-				Key:    "custom-taint",
-				Effect: corev1.TaintEffectNoSchedule,
-				Value:  "custom-value",
-			},
-			corev1.Taint{
-				Key:    "other-custom-taint",
-				Effect: corev1.TaintEffectNoExecute,
-				Value:  "other-custom-value",
-			},
-		))
+		Expect(nodeClaim.Spec.Taints).To(ContainElements(taints))
 
 		node := test.Node(test.NodeOptions{ProviderID: nodeClaim.Status.ProviderID, Taints: []corev1.Taint{v1.UnregisteredNoExecuteTaint}})
 		ExpectApplied(ctx, env.Client, node)
 		ExpectObjectReconciled(ctx, env.Client, nodeClaimController, nodeClaim)
 		node = ExpectExists(ctx, env.Client, node)
 
-		Expect(node.Spec.Taints).To(ContainElements(
-			corev1.Taint{
-				Key:    "custom-taint",
-				Effect: corev1.TaintEffectNoSchedule,
-				Value:  "custom-value",
-			},
-			corev1.Taint{
-				Key:    "other-custom-taint",
-				Effect: corev1.TaintEffectNoExecute,
-				Value:  "other-custom-value",
-			},
-		))
+		Expect(node.Spec.Taints).To(ContainElements(taints))
 	})
-	It("should sync the startupTaints to the Node when the Node comes online", func() {
+	It("should sync the taints to the Node when the Node comes online, if node label do not sync taints is present but key is not true", func() {
+		nodeClaim := test.NodeClaim(v1.NodeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: map[string]string{
+					v1.NodePoolLabelKey: nodePool.Name,
+				},
+			},
+			Spec: v1.NodeClaimSpec{Taints: taints},
+		})
+		ExpectApplied(ctx, env.Client, nodePool, nodeClaim)
+		ExpectObjectReconciled(ctx, env.Client, nodeClaimController, nodeClaim)
+		nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+		Expect(nodeClaim.Spec.Taints).To(ContainElements(taints))
+
+		node := test.Node(test.NodeOptions{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: map[string]string{v1.NodeDoNotSyncTaintsLabelKey: "false"},
+			},
+			ProviderID: nodeClaim.Status.ProviderID,
+			Taints:     []corev1.Taint{v1.UnregisteredNoExecuteTaint},
+		})
+		ExpectApplied(ctx, env.Client, node)
+		ExpectObjectReconciled(ctx, env.Client, nodeClaimController, nodeClaim)
+		node = ExpectExists(ctx, env.Client, node)
+
+		Expect(node.Spec.Taints).To(ContainElements(taints))
+	})
+	It("should not sync the taints to the Node when the Node comes online, with node label do not sync taints", func() {
+		nodeClaim := test.NodeClaim(v1.NodeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: map[string]string{
+					v1.NodePoolLabelKey: nodePool.Name,
+				},
+			},
+			Spec: v1.NodeClaimSpec{Taints: taints},
+		})
+		ExpectApplied(ctx, env.Client, nodePool, nodeClaim)
+		ExpectObjectReconciled(ctx, env.Client, nodeClaimController, nodeClaim)
+		nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+		Expect(nodeClaim.Spec.Taints).To(ContainElements(taints))
+
+		node := test.Node(test.NodeOptions{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: map[string]string{v1.NodeDoNotSyncTaintsLabelKey: "true"},
+			},
+			ProviderID: nodeClaim.Status.ProviderID,
+			Taints:     []corev1.Taint{v1.UnregisteredNoExecuteTaint},
+		})
+		ExpectApplied(ctx, env.Client, node)
+		ExpectObjectReconciled(ctx, env.Client, nodeClaimController, nodeClaim)
+		node = ExpectExists(ctx, env.Client, node)
+
+		Expect(node.Spec.Taints).To(HaveLen(1))
+		Expect(node.Spec.Taints).To(Not(ContainElements(taints)))
+		Expect(nodeClaim.Spec.Taints).To(ContainElements(taints))
+		Expect(node.Spec.Taints).To(ContainElements(corev1.Taint{Key: corev1.TaintNodeNotReady, Effect: corev1.TaintEffectNoSchedule}))
+	})
+	It("should not sync the startupTaints to the Node when the Node comes online, with node label do not sync taints", func() {
 		nodeClaim := test.NodeClaim(v1.NodeClaim{
 			ObjectMeta: metav1.ObjectMeta{
 				Labels: map[string]string{
@@ -268,75 +382,86 @@ var _ = Describe("Registration", func() {
 				},
 			},
 			Spec: v1.NodeClaimSpec{
-				Taints: []corev1.Taint{
-					{
-						Key:    "custom-taint",
-						Effect: corev1.TaintEffectNoSchedule,
-						Value:  "custom-value",
-					},
-					{
-						Key:    "other-custom-taint",
-						Effect: corev1.TaintEffectNoExecute,
-						Value:  "other-custom-value",
-					},
-				},
-				StartupTaints: []corev1.Taint{
-					{
-						Key:    "custom-startup-taint",
-						Effect: corev1.TaintEffectNoSchedule,
-						Value:  "custom-startup-value",
-					},
-					{
-						Key:    "other-custom-startup-taint",
-						Effect: corev1.TaintEffectNoExecute,
-						Value:  "other-custom-startup-value",
-					},
-				},
+				Taints:        taints,
+				StartupTaints: startupTaints,
 			},
 		})
 		ExpectApplied(ctx, env.Client, nodePool, nodeClaim)
 		ExpectObjectReconciled(ctx, env.Client, nodeClaimController, nodeClaim)
 		nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
-		Expect(nodeClaim.Spec.StartupTaints).To(ContainElements(
-			corev1.Taint{
-				Key:    "custom-startup-taint",
-				Effect: corev1.TaintEffectNoSchedule,
-				Value:  "custom-startup-value",
+		Expect(nodeClaim.Spec.StartupTaints).To(ContainElements(startupTaints))
+
+		node := test.Node(test.NodeOptions{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: map[string]string{v1.NodeDoNotSyncTaintsLabelKey: "true"},
 			},
-			corev1.Taint{
-				Key:    "other-custom-startup-taint",
-				Effect: corev1.TaintEffectNoExecute,
-				Value:  "other-custom-startup-value",
+			ProviderID: nodeClaim.Status.ProviderID,
+			Taints:     []corev1.Taint{v1.UnregisteredNoExecuteTaint},
+		})
+		ExpectApplied(ctx, env.Client, node)
+		ExpectObjectReconciled(ctx, env.Client, nodeClaimController, nodeClaim)
+		node = ExpectExists(ctx, env.Client, node)
+
+		Expect(node.Spec.Taints).To(HaveLen(1))
+		Expect(node.Spec.Taints).To(Not(ContainElements(startupTaints)))
+		Expect(nodeClaim.Spec.StartupTaints).To(ContainElements(startupTaints))
+		Expect(node.Spec.Taints).To(ContainElements(corev1.Taint{Key: corev1.TaintNodeNotReady, Effect: corev1.TaintEffectNoSchedule}))
+	})
+	It("should sync the startupTaints to the Node when the Node comes online, if node label do not sync taints is not present", func() {
+		nodeClaim := test.NodeClaim(v1.NodeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: map[string]string{
+					v1.NodePoolLabelKey: nodePool.Name,
+				},
 			},
-		))
+			Spec: v1.NodeClaimSpec{
+				Taints:        taints,
+				StartupTaints: startupTaints,
+			},
+		})
+		ExpectApplied(ctx, env.Client, nodePool, nodeClaim)
+		ExpectObjectReconciled(ctx, env.Client, nodeClaimController, nodeClaim)
+		nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+		Expect(nodeClaim.Spec.Taints).To(ContainElements(taints))
+		Expect(nodeClaim.Spec.StartupTaints).To(ContainElements(startupTaints))
 
 		node := test.Node(test.NodeOptions{ProviderID: nodeClaim.Status.ProviderID, Taints: []corev1.Taint{v1.UnregisteredNoExecuteTaint}})
 		ExpectApplied(ctx, env.Client, node)
 		ExpectObjectReconciled(ctx, env.Client, nodeClaimController, nodeClaim)
 		node = ExpectExists(ctx, env.Client, node)
 
-		Expect(node.Spec.Taints).To(ContainElements(
-			corev1.Taint{
-				Key:    "custom-taint",
-				Effect: corev1.TaintEffectNoSchedule,
-				Value:  "custom-value",
+		Expect(node.Spec.Taints).To(ContainElements(startupTaints))
+	})
+	It("should sync the startupTaints to the Node when the Node comes online, if node label do not sync taints is present but key is not true", func() {
+		nodeClaim := test.NodeClaim(v1.NodeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: map[string]string{
+					v1.NodePoolLabelKey: nodePool.Name,
+				},
 			},
-			corev1.Taint{
-				Key:    "other-custom-taint",
-				Effect: corev1.TaintEffectNoExecute,
-				Value:  "other-custom-value",
+			Spec: v1.NodeClaimSpec{
+				Taints:        taints,
+				StartupTaints: startupTaints,
 			},
-			corev1.Taint{
-				Key:    "custom-startup-taint",
-				Effect: corev1.TaintEffectNoSchedule,
-				Value:  "custom-startup-value",
+		})
+		ExpectApplied(ctx, env.Client, nodePool, nodeClaim)
+		ExpectObjectReconciled(ctx, env.Client, nodeClaimController, nodeClaim)
+		nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+		Expect(nodeClaim.Spec.Taints).To(ContainElements(taints))
+		Expect(nodeClaim.Spec.StartupTaints).To(ContainElements(startupTaints))
+
+		node := test.Node(test.NodeOptions{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: map[string]string{v1.NodeDoNotSyncTaintsLabelKey: "false"},
 			},
-			corev1.Taint{
-				Key:    "other-custom-startup-taint",
-				Effect: corev1.TaintEffectNoExecute,
-				Value:  "other-custom-startup-value",
-			},
-		))
+			ProviderID: nodeClaim.Status.ProviderID,
+			Taints:     []corev1.Taint{v1.UnregisteredNoExecuteTaint},
+		})
+		ExpectApplied(ctx, env.Client, node)
+		ExpectObjectReconciled(ctx, env.Client, nodeClaimController, nodeClaim)
+		node = ExpectExists(ctx, env.Client, node)
+
+		Expect(node.Spec.Taints).To(ContainElements(startupTaints))
 	})
 	It("should not re-sync the startupTaints to the Node when the startupTaints are removed", func() {
 		nodeClaim := test.NodeClaim(v1.NodeClaim{
@@ -345,42 +470,21 @@ var _ = Describe("Registration", func() {
 					v1.NodePoolLabelKey: nodePool.Name,
 				},
 			},
-			Spec: v1.NodeClaimSpec{
-				StartupTaints: []corev1.Taint{
-					{
-						Key:    "custom-startup-taint",
-						Effect: corev1.TaintEffectNoSchedule,
-						Value:  "custom-startup-value",
-					},
-					{
-						Key:    "other-custom-startup-taint",
-						Effect: corev1.TaintEffectNoExecute,
-						Value:  "other-custom-startup-value",
-					},
-				},
-			},
+			Spec: v1.NodeClaimSpec{StartupTaints: startupTaints},
 		})
 		ExpectApplied(ctx, env.Client, nodePool, nodeClaim)
 		ExpectObjectReconciled(ctx, env.Client, nodeClaimController, nodeClaim)
 		nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
 
-		node := test.Node(test.NodeOptions{ProviderID: nodeClaim.Status.ProviderID, Taints: []corev1.Taint{v1.UnregisteredNoExecuteTaint}})
+		node := test.Node(test.NodeOptions{
+			ProviderID: nodeClaim.Status.ProviderID,
+			Taints:     append(startupTaints, v1.UnregisteredNoExecuteTaint),
+		})
 		ExpectApplied(ctx, env.Client, node)
 		ExpectObjectReconciled(ctx, env.Client, nodeClaimController, nodeClaim)
 		node = ExpectExists(ctx, env.Client, node)
 
-		Expect(node.Spec.Taints).To(ContainElements(
-			corev1.Taint{
-				Key:    "custom-startup-taint",
-				Effect: corev1.TaintEffectNoSchedule,
-				Value:  "custom-startup-value",
-			},
-			corev1.Taint{
-				Key:    "other-custom-startup-taint",
-				Effect: corev1.TaintEffectNoExecute,
-				Value:  "other-custom-startup-value",
-			},
-		))
+		Expect(node.Spec.Taints).To(ContainElements(startupTaints))
 		node.Spec.Taints = []corev1.Taint{}
 		ExpectApplied(ctx, env.Client, node)
 
@@ -389,16 +493,26 @@ var _ = Describe("Registration", func() {
 		Expect(node.Spec.Taints).To(HaveLen(0))
 	})
 	It("should add NodeRegistrationHealthy=true on the nodePool if registration succeeds and if it was previously false", func() {
+		ExpectApplied(ctx, env.Client, nodePool)
 		nodeClaimOpts := []v1.NodeClaim{{
 			ObjectMeta: metav1.ObjectMeta{
 				Labels: map[string]string{
 					v1.NodePoolLabelKey: nodePool.Name,
 				},
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion:         object.GVK(nodePool).GroupVersion().String(),
+						Kind:               object.GVK(nodePool).Kind,
+						Name:               nodePool.Name,
+						UID:                nodePool.UID,
+						BlockOwnerDeletion: new(true),
+					},
+				},
 			},
 		}}
 		nodeClaim := test.NodeClaim(nodeClaimOpts...)
 		nodePool.StatusConditions().SetFalse(v1.ConditionTypeNodeRegistrationHealthy, "unhealthy", "unhealthy")
-		ExpectApplied(ctx, env.Client, nodePool, nodeClaim)
+		ExpectApplied(ctx, env.Client, nodeClaim)
 		ExpectObjectReconciled(ctx, env.Client, nodeClaimController, nodeClaim)
 		nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
 
@@ -414,18 +528,467 @@ var _ = Describe("Registration", func() {
 			Status: metav1.ConditionTrue,
 		})
 	})
-	It("should not block on updating NodeRegistrationHealthy status condition if nodeClaim is not owned by a nodePool", func() {
-		nodeClaim := test.NodeClaim()
+	It("should not add NodeRegistrationHealthy=true on the nodePool if registration succeeds once and if it had previously failed twice in the registrationHealthBuffer", func() {
+		ExpectApplied(ctx, env.Client, nodePool)
+		nodeClaim1 := test.NodeClaim(v1.NodeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: map[string]string{
+					v1.NodePoolLabelKey: nodePool.Name,
+				},
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion:         object.GVK(nodePool).GroupVersion().String(),
+						Kind:               object.GVK(nodePool).Kind,
+						Name:               nodePool.Name,
+						UID:                nodePool.UID,
+						BlockOwnerDeletion: new(true),
+					},
+				},
+			},
+		})
+		nodeClaim2 := test.NodeClaim(v1.NodeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: map[string]string{
+					v1.NodePoolLabelKey: nodePool.Name,
+				},
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion:         object.GVK(nodePool).GroupVersion().String(),
+						Kind:               object.GVK(nodePool).Kind,
+						Name:               nodePool.Name,
+						UID:                nodePool.UID,
+						BlockOwnerDeletion: new(true),
+					},
+				},
+			},
+		})
+		cloudProvider.AllowedCreateCalls = 0 // Don't allow Create() calls to succeed
+		ExpectApplied(ctx, env.Client, nodeClaim1, nodeClaim2)
+		_ = ExpectObjectReconcileFailed(ctx, env.Client, nodeClaimController, nodeClaim1)
+		_ = ExpectObjectReconcileFailed(ctx, env.Client, nodeClaimController, nodeClaim2)
+
+		// If the node hasn't registered in the registration timeframe, then we deprovision the nodeClaim
+		env.Clock.Step(time.Minute * 6)
+		_ = ExpectObjectReconcileFailed(ctx, env.Client, nodeClaimController, nodeClaim1)
+		_ = ExpectObjectReconcileFailed(ctx, env.Client, nodeClaimController, nodeClaim2)
+
+		// NodeClaim registration failed twice which is greater than our threshold so update the NodeRegistrationHealthy status condition
+		operatorpkg.ExpectStatusConditions(ctx, env.Client, 1*time.Minute, nodePool, status.Condition{Type: v1.ConditionTypeNodeRegistrationHealthy, Status: metav1.ConditionFalse})
+		Expect(npState.Status(nodePool.UID)).To(BeEquivalentTo(nodepoolhealth.StatusUnhealthy))
+		ExpectFinalizersRemoved(ctx, env.Client, nodeClaim1, nodeClaim2)
+		ExpectNotFound(ctx, env.Client, nodeClaim1, nodeClaim2)
+
+		cloudProvider.Reset()
+		nodeClaim3 := test.NodeClaim(v1.NodeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: map[string]string{
+					v1.NodePoolLabelKey: nodePool.Name,
+				},
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion:         object.GVK(nodePool).GroupVersion().String(),
+						Kind:               object.GVK(nodePool).Kind,
+						Name:               nodePool.Name,
+						UID:                nodePool.UID,
+						BlockOwnerDeletion: new(true),
+					},
+				},
+			},
+		})
+		ExpectApplied(ctx, env.Client, nodePool, nodeClaim3)
+		ExpectObjectReconciled(ctx, env.Client, nodeClaimController, nodeClaim3)
+		nodeClaim3 = ExpectExists(ctx, env.Client, nodeClaim3)
+
+		node := test.Node(test.NodeOptions{ProviderID: nodeClaim3.Status.ProviderID, Taints: []corev1.Taint{v1.UnregisteredNoExecuteTaint}})
+		ExpectApplied(ctx, env.Client, node)
+		ExpectObjectReconciled(ctx, env.Client, nodeClaimController, nodeClaim3)
+
+		nodeClaim3 = ExpectExists(ctx, env.Client, nodeClaim3)
+		Expect(nodeClaim3.StatusConditions().Get(v1.ConditionTypeRegistered).IsTrue()).To(BeTrue())
+		Expect(nodeClaim3.Status.NodeName).To(Equal(node.Name))
+
+		Expect(npState.Status(nodePool.UID)).To(BeEquivalentTo(nodepoolhealth.StatusUnhealthy))
+		operatorpkg.ExpectStatusConditions(ctx, env.Client, 1*time.Minute, nodePool, status.Condition{
+			Type:   v1.ConditionTypeNodeRegistrationHealthy,
+			Status: metav1.ConditionFalse,
+		})
+	})
+	It("should not update NodeRegistrationHealthy status condition if nodePool owning the nodeClaim is deleted", func() {
+		nodePoolName := test.RandomName()
+		nodePool = test.NodePool(
+			v1.NodePool{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: nodePoolName,
+				},
+			},
+		)
+		ExpectApplied(ctx, env.Client, nodePool)
+		nodeClaim := test.NodeClaim(v1.NodeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: map[string]string{
+					v1.NodePoolLabelKey: nodePool.Name,
+				},
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion:         object.GVK(nodePool).GroupVersion().String(),
+						Kind:               object.GVK(nodePool).Kind,
+						Name:               nodePool.Name,
+						UID:                nodePool.UID,
+						BlockOwnerDeletion: new(true),
+					},
+				},
+			},
+		})
 		ExpectApplied(ctx, env.Client, nodeClaim)
 		ExpectObjectReconciled(ctx, env.Client, nodeClaimController, nodeClaim)
 		nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+		// Delete the nodePool referenced on the nodeClaim
+		ExpectDeleted(ctx, env.Client, nodePool)
+		//Recreate the nodePool so that it will have a different UID
+		nodePool = test.NodePool(
+			v1.NodePool{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: nodePoolName,
+				},
+			},
+		)
+		ExpectApplied(ctx, env.Client, nodePool)
+		operatorpkg.ExpectStatusConditions(ctx, env.Client, 1*time.Minute, nodePool, status.Condition{Type: v1.ConditionTypeNodeRegistrationHealthy, Status: metav1.ConditionUnknown})
 
 		node := test.Node(test.NodeOptions{ProviderID: nodeClaim.Status.ProviderID, Taints: []corev1.Taint{v1.UnregisteredNoExecuteTaint}})
 		ExpectApplied(ctx, env.Client, node)
 		ExpectObjectReconciled(ctx, env.Client, nodeClaimController, nodeClaim)
+		operatorpkg.ExpectStatusConditions(ctx, env.Client, 1*time.Minute, nodePool, status.Condition{Type: v1.ConditionTypeNodeRegistrationHealthy, Status: metav1.ConditionUnknown})
 
 		nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
 		Expect(nodeClaim.StatusConditions().Get(v1.ConditionTypeRegistered).IsTrue()).To(BeTrue())
 		Expect(nodeClaim.Status.NodeName).To(Equal(node.Name))
+	})
+	Context("RegistrationHooks", func() {
+		It("should complete registration when a single hook passes", func() {
+			hookController := nodeclaimlifecycle.NewController(env.Clock, env.Client, cloudProvider,
+				events.NewRecorder(&record.FakeRecorder{}), cluster, nodepoolhealth.NewState(),
+				[]cloudprovider.NodeLifecycleHook{
+					testHook{
+						name: "always-pass",
+						fn: func(_ context.Context, _ *v1.NodeClaim) (cloudprovider.NodeLifecycleHookResult, error) {
+							return cloudprovider.NodeLifecycleHookResult{}, nil
+						},
+					},
+				},
+			)
+			nodeClaim := test.NodeClaim(v1.NodeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{v1.NodePoolLabelKey: nodePool.Name},
+				},
+			})
+			ExpectApplied(ctx, env.Client, nodePool, nodeClaim)
+			ExpectObjectReconciled(ctx, env.Client, hookController, nodeClaim)
+			nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+
+			node := test.Node(test.NodeOptions{ProviderID: nodeClaim.Status.ProviderID, Taints: []corev1.Taint{v1.UnregisteredNoExecuteTaint}})
+			ExpectApplied(ctx, env.Client, node)
+			ExpectObjectReconciled(ctx, env.Client, hookController, nodeClaim)
+
+			nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+			Expect(nodeClaim.StatusConditions().Get(v1.ConditionTypeRegistered).IsTrue()).To(BeTrue())
+			Expect(nodeClaim.Status.NodeName).To(Equal(node.Name))
+		})
+		It("should defer registration when a hook returns false", func() {
+			hookController := nodeclaimlifecycle.NewController(env.Clock, env.Client, cloudProvider,
+				events.NewRecorder(&record.FakeRecorder{}), cluster, nodepoolhealth.NewState(),
+				[]cloudprovider.NodeLifecycleHook{
+					testHook{
+						name: "capacity-reservation",
+						fn: func(_ context.Context, _ *v1.NodeClaim) (cloudprovider.NodeLifecycleHookResult, error) {
+							return cloudprovider.NodeLifecycleHookResult{RequeueAfter: 5 * time.Second}, nil
+						},
+					},
+				},
+			)
+			nodeClaim := test.NodeClaim(v1.NodeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{v1.NodePoolLabelKey: nodePool.Name},
+				},
+			})
+			ExpectApplied(ctx, env.Client, nodePool, nodeClaim)
+			ExpectObjectReconciled(ctx, env.Client, hookController, nodeClaim)
+			nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+
+			node := test.Node(test.NodeOptions{ProviderID: nodeClaim.Status.ProviderID, Taints: []corev1.Taint{v1.UnregisteredNoExecuteTaint}})
+			ExpectApplied(ctx, env.Client, node)
+			ExpectObjectReconciled(ctx, env.Client, hookController, nodeClaim)
+
+			nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+			Expect(nodeClaim.StatusConditions().Get(v1.ConditionTypeRegistered).IsUnknown()).To(BeTrue())
+			cond := nodeClaim.StatusConditions().Get(v1.ConditionTypeRegistered)
+			Expect(cond.Reason).To(Equal("RegistrationHookPending"))
+			Expect(cond.Message).To(ContainSubstring("capacity-reservation"))
+			Expect(nodeClaim.Status.NodeName).To(Equal(""))
+
+			// Verify the node still has the unregistered taint
+			node = ExpectExists(ctx, env.Client, node)
+			Expect(node.Spec.Taints).To(ContainElement(v1.UnregisteredNoExecuteTaint))
+		})
+		It("should return error when a hook returns an error", func() {
+			hookController := nodeclaimlifecycle.NewController(env.Clock, env.Client, cloudProvider,
+				events.NewRecorder(&record.FakeRecorder{}), cluster, nodepoolhealth.NewState(),
+				[]cloudprovider.NodeLifecycleHook{
+					testHook{
+						name: "failing-hook",
+						fn: func(_ context.Context, _ *v1.NodeClaim) (cloudprovider.NodeLifecycleHookResult, error) {
+							return cloudprovider.NodeLifecycleHookResult{}, fmt.Errorf("cloud provider API error")
+						},
+					},
+				},
+			)
+			nodeClaim := test.NodeClaim(v1.NodeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{v1.NodePoolLabelKey: nodePool.Name},
+				},
+			})
+			ExpectApplied(ctx, env.Client, nodePool, nodeClaim)
+			ExpectObjectReconciled(ctx, env.Client, hookController, nodeClaim)
+			nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+
+			node := test.Node(test.NodeOptions{ProviderID: nodeClaim.Status.ProviderID, Taints: []corev1.Taint{v1.UnregisteredNoExecuteTaint}})
+			ExpectApplied(ctx, env.Client, node)
+			_ = ExpectObjectReconcileFailed(ctx, env.Client, hookController, nodeClaim)
+
+			nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+			Expect(nodeClaim.StatusConditions().Get(v1.ConditionTypeRegistered).IsUnknown()).To(BeTrue())
+			Expect(nodeClaim.Status.NodeName).To(Equal(""))
+		})
+		It("should defer registration when the second hook returns false with multiple hooks", func() {
+			hookController := nodeclaimlifecycle.NewController(env.Clock, env.Client, cloudProvider,
+				events.NewRecorder(&record.FakeRecorder{}), cluster, nodepoolhealth.NewState(),
+				[]cloudprovider.NodeLifecycleHook{
+					testHook{
+						name: "pass-hook",
+						fn: func(_ context.Context, _ *v1.NodeClaim) (cloudprovider.NodeLifecycleHookResult, error) {
+							return cloudprovider.NodeLifecycleHookResult{}, nil
+						},
+					},
+					testHook{
+						name: "fail-hook",
+						fn: func(_ context.Context, _ *v1.NodeClaim) (cloudprovider.NodeLifecycleHookResult, error) {
+							return cloudprovider.NodeLifecycleHookResult{RequeueAfter: 5 * time.Second}, nil
+						},
+					},
+				},
+			)
+			nodeClaim := test.NodeClaim(v1.NodeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{v1.NodePoolLabelKey: nodePool.Name},
+				},
+			})
+			ExpectApplied(ctx, env.Client, nodePool, nodeClaim)
+			ExpectObjectReconciled(ctx, env.Client, hookController, nodeClaim)
+			nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+
+			node := test.Node(test.NodeOptions{ProviderID: nodeClaim.Status.ProviderID, Taints: []corev1.Taint{v1.UnregisteredNoExecuteTaint}})
+			ExpectApplied(ctx, env.Client, node)
+			ExpectObjectReconciled(ctx, env.Client, hookController, nodeClaim)
+
+			nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+			Expect(nodeClaim.StatusConditions().Get(v1.ConditionTypeRegistered).IsUnknown()).To(BeTrue())
+			cond := nodeClaim.StatusConditions().Get(v1.ConditionTypeRegistered)
+			Expect(cond.Message).To(ContainSubstring("fail-hook"))
+			Expect(nodeClaim.Status.NodeName).To(Equal(""))
+		})
+		It("should complete registration when multiple hooks all pass", func() {
+			hookController := nodeclaimlifecycle.NewController(env.Clock, env.Client, cloudProvider,
+				events.NewRecorder(&record.FakeRecorder{}), cluster, nodepoolhealth.NewState(),
+				[]cloudprovider.NodeLifecycleHook{
+					testHook{
+						name: "hook-one",
+						fn: func(_ context.Context, _ *v1.NodeClaim) (cloudprovider.NodeLifecycleHookResult, error) {
+							return cloudprovider.NodeLifecycleHookResult{}, nil
+						},
+					},
+					testHook{
+						name: "hook-two",
+						fn: func(_ context.Context, _ *v1.NodeClaim) (cloudprovider.NodeLifecycleHookResult, error) {
+							return cloudprovider.NodeLifecycleHookResult{}, nil
+						},
+					},
+				},
+			)
+			nodeClaim := test.NodeClaim(v1.NodeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{v1.NodePoolLabelKey: nodePool.Name},
+				},
+			})
+			ExpectApplied(ctx, env.Client, nodePool, nodeClaim)
+			ExpectObjectReconciled(ctx, env.Client, hookController, nodeClaim)
+			nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+
+			node := test.Node(test.NodeOptions{ProviderID: nodeClaim.Status.ProviderID, Taints: []corev1.Taint{v1.UnregisteredNoExecuteTaint}})
+			ExpectApplied(ctx, env.Client, node)
+			ExpectObjectReconciled(ctx, env.Client, hookController, nodeClaim)
+
+			nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+			Expect(nodeClaim.StatusConditions().Get(v1.ConditionTypeRegistered).IsTrue()).To(BeTrue())
+			Expect(nodeClaim.Status.NodeName).To(Equal(node.Name))
+		})
+		It("should call all hooks in parallel and list all pending hooks in status", func() {
+			var secondHookCalls atomic.Int32
+			hookController := nodeclaimlifecycle.NewController(env.Clock, env.Client, cloudProvider,
+				events.NewRecorder(&record.FakeRecorder{}), cluster, nodepoolhealth.NewState(),
+				[]cloudprovider.NodeLifecycleHook{
+					testHook{
+						name: "blocking-hook",
+						fn: func(_ context.Context, _ *v1.NodeClaim) (cloudprovider.NodeLifecycleHookResult, error) {
+							return cloudprovider.NodeLifecycleHookResult{RequeueAfter: 5 * time.Second}, nil
+						},
+					},
+					testHook{
+						name: "also-blocking",
+						fn: func(_ context.Context, _ *v1.NodeClaim) (cloudprovider.NodeLifecycleHookResult, error) {
+							secondHookCalls.Add(1)
+							return cloudprovider.NodeLifecycleHookResult{RequeueAfter: 10 * time.Second}, nil
+						},
+					},
+				},
+			)
+			nodeClaim := test.NodeClaim(v1.NodeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{v1.NodePoolLabelKey: nodePool.Name},
+				},
+			})
+			ExpectApplied(ctx, env.Client, nodePool, nodeClaim)
+			ExpectObjectReconciled(ctx, env.Client, hookController, nodeClaim)
+			nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+
+			node := test.Node(test.NodeOptions{ProviderID: nodeClaim.Status.ProviderID, Taints: []corev1.Taint{v1.UnregisteredNoExecuteTaint}})
+			ExpectApplied(ctx, env.Client, node)
+			ExpectObjectReconciled(ctx, env.Client, hookController, nodeClaim)
+
+			// Both hooks should have been called in parallel
+			Expect(secondHookCalls.Load()).To(Equal(int32(1)))
+
+			// Status message should list both pending hooks
+			nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+			cond := nodeClaim.StatusConditions().Get(v1.ConditionTypeRegistered)
+			Expect(cond.Message).To(ContainSubstring("blocking-hook"))
+			Expect(cond.Message).To(ContainSubstring("also-blocking"))
+		})
+		It("should complete registration after a hook transitions from not ready to ready", func() {
+			ready := atomic.Bool{}
+			hookController := nodeclaimlifecycle.NewController(env.Clock, env.Client, cloudProvider,
+				events.NewRecorder(&record.FakeRecorder{}), cluster, nodepoolhealth.NewState(),
+				[]cloudprovider.NodeLifecycleHook{
+					testHook{
+						name: "eventually-ready",
+						fn: func(_ context.Context, _ *v1.NodeClaim) (cloudprovider.NodeLifecycleHookResult, error) {
+							if ready.Load() {
+								return cloudprovider.NodeLifecycleHookResult{}, nil
+							}
+							return cloudprovider.NodeLifecycleHookResult{RequeueAfter: 5 * time.Second}, nil
+						},
+					},
+				},
+			)
+			nodeClaim := test.NodeClaim(v1.NodeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{v1.NodePoolLabelKey: nodePool.Name},
+				},
+			})
+			ExpectApplied(ctx, env.Client, nodePool, nodeClaim)
+			ExpectObjectReconciled(ctx, env.Client, hookController, nodeClaim)
+			nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+
+			node := test.Node(test.NodeOptions{ProviderID: nodeClaim.Status.ProviderID, Taints: []corev1.Taint{v1.UnregisteredNoExecuteTaint}})
+			ExpectApplied(ctx, env.Client, node)
+
+			// First reconcile: hook not ready, registration should be deferred
+			ExpectObjectReconciled(ctx, env.Client, hookController, nodeClaim)
+			nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+			Expect(nodeClaim.StatusConditions().Get(v1.ConditionTypeRegistered).IsUnknown()).To(BeTrue())
+			Expect(nodeClaim.Status.NodeName).To(Equal(""))
+
+			// Mark hook as ready, reconcile again
+			ready.Store(true)
+			ExpectObjectReconciled(ctx, env.Client, hookController, nodeClaim)
+			nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+			Expect(nodeClaim.StatusConditions().Get(v1.ConditionTypeRegistered).IsTrue()).To(BeTrue())
+			Expect(nodeClaim.Status.NodeName).To(Equal(node.Name))
+		})
+		It("should complete registration with empty hooks slice", func() {
+			hookController := nodeclaimlifecycle.NewController(env.Clock, env.Client, cloudProvider,
+				events.NewRecorder(&record.FakeRecorder{}), cluster, nodepoolhealth.NewState(), []cloudprovider.NodeLifecycleHook{})
+			nodeClaim := test.NodeClaim(v1.NodeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{v1.NodePoolLabelKey: nodePool.Name},
+				},
+			})
+			ExpectApplied(ctx, env.Client, nodePool, nodeClaim)
+			ExpectObjectReconciled(ctx, env.Client, hookController, nodeClaim)
+			nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+
+			node := test.Node(test.NodeOptions{ProviderID: nodeClaim.Status.ProviderID, Taints: []corev1.Taint{v1.UnregisteredNoExecuteTaint}})
+			ExpectApplied(ctx, env.Client, node)
+			ExpectObjectReconciled(ctx, env.Client, hookController, nodeClaim)
+
+			nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+			Expect(nodeClaim.StatusConditions().Get(v1.ConditionTypeRegistered).IsTrue()).To(BeTrue())
+			Expect(nodeClaim.Status.NodeName).To(Equal(node.Name))
+		})
+		It("should complete registration with nil hooks slice", func() {
+			hookController := nodeclaimlifecycle.NewController(env.Clock, env.Client, cloudProvider,
+				events.NewRecorder(&record.FakeRecorder{}), cluster, nodepoolhealth.NewState(), nil)
+			nodeClaim := test.NodeClaim(v1.NodeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{v1.NodePoolLabelKey: nodePool.Name},
+				},
+			})
+			ExpectApplied(ctx, env.Client, nodePool, nodeClaim)
+			ExpectObjectReconciled(ctx, env.Client, hookController, nodeClaim)
+			nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+
+			node := test.Node(test.NodeOptions{ProviderID: nodeClaim.Status.ProviderID, Taints: []corev1.Taint{v1.UnregisteredNoExecuteTaint}})
+			ExpectApplied(ctx, env.Client, node)
+			ExpectObjectReconciled(ctx, env.Client, hookController, nodeClaim)
+
+			nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+			Expect(nodeClaim.StatusConditions().Get(v1.ConditionTypeRegistered).IsTrue()).To(BeTrue())
+			Expect(nodeClaim.Status.NodeName).To(Equal(node.Name))
+		})
+		It("should propagate labels added by a registration hook to both the node and the nodeclaim", func() {
+			hookController := nodeclaimlifecycle.NewController(env.Clock, env.Client, cloudProvider,
+				events.NewRecorder(&record.FakeRecorder{}), cluster, nodepoolhealth.NewState(),
+				[]cloudprovider.NodeLifecycleHook{
+					testHook{
+						name: "label-mutating-hook",
+						fn: func(_ context.Context, nc *v1.NodeClaim) (cloudprovider.NodeLifecycleHookResult, error) {
+							nc.Labels["test.karpenter.sh/hook-label"] = "resolved-value"
+							return cloudprovider.NodeLifecycleHookResult{}, nil
+						},
+					},
+				},
+			)
+			nodeClaim := test.NodeClaim(v1.NodeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						v1.NodePoolLabelKey:            nodePool.Name,
+						"test.karpenter.sh/hook-label": "",
+					},
+				},
+			})
+			ExpectApplied(ctx, env.Client, nodePool, nodeClaim)
+			ExpectObjectReconciled(ctx, env.Client, hookController, nodeClaim)
+			nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+
+			node := test.Node(test.NodeOptions{ProviderID: nodeClaim.Status.ProviderID, Taints: []corev1.Taint{v1.UnregisteredNoExecuteTaint}})
+			ExpectApplied(ctx, env.Client, node)
+			ExpectObjectReconciled(ctx, env.Client, hookController, nodeClaim)
+
+			nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+			Expect(nodeClaim.StatusConditions().Get(v1.ConditionTypeRegistered).IsTrue()).To(BeTrue())
+			Expect(nodeClaim.Labels).To(HaveKeyWithValue("test.karpenter.sh/hook-label", "resolved-value"))
+
+			node = ExpectExists(ctx, env.Client, node)
+			Expect(node.Labels).To(HaveKeyWithValue("test.karpenter.sh/hook-label", "resolved-value"))
+		})
 	})
 })
